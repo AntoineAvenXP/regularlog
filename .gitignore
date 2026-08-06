@@ -1,0 +1,28 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# env — NE JAMAIS committer les clés
+.env
+.env.local
+.env*.local
+
+# firebase
+.firebase/
+firebase-debug.log
+*-debug.log
+
+# misc
+.DS_Store
+*.pem
+/coverage
+next-env.d.ts
+
+# typescript build cache
+*.tsbuildinfo

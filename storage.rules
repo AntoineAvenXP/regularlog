@@ -1,0 +1,16 @@
+rules_version = '2';
+
+// Regularlog — fichiers (justificatifs + fichiers sources d'import).
+// Tout est rangé sous users/{uid}/... et n'est accessible QUE par cet uid.
+// Aucun accès public, aucun lien de partage.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{uid}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Tout le reste : interdit.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

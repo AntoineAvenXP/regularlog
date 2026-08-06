@@ -1,0 +1,260 @@
+* {
+  box-sizing: border-box;
+}
+:root {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --green: #16a34a;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 10px;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button {
+  font: inherit;
+  cursor: pointer;
+}
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.center {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.muted {
+  color: var(--muted);
+}
+.error {
+  color: var(--red);
+  font-size: 13px;
+}
+
+/* Layout applicatif */
+.app {
+  display: flex;
+  min-height: 100vh;
+}
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: #0f1e33;
+  color: #cbd5e1;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 12px;
+  gap: 4px;
+}
+.sidebar .brand {
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+  padding: 6px 10px 16px;
+  letter-spacing: 0.02em;
+}
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.sidebar nav a {
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: #cbd5e1;
+  font-weight: 500;
+}
+.sidebar nav a:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+.sidebar nav a.active {
+  background: var(--primary);
+  color: #fff;
+}
+.sidebar .logout {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #cbd5e1;
+  padding: 8px;
+  border-radius: 8px;
+}
+.sidebar .logout:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.content {
+  flex: 1;
+  padding: 26px 30px;
+  min-width: 0;
+}
+
+/* Composants */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.login {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.login h1 {
+  margin: 0;
+  font-size: 24px;
+}
+.login input {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.login button,
+.btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+.login button:hover,
+.btn:hover {
+  background: var(--primary-dark);
+}
+.btn.secondary {
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn.secondary:hover {
+  background: #f8fafc;
+}
+.btn.danger {
+  background: var(--red);
+}
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+h1.page {
+  font-size: 24px;
+  margin: 0 0 4px;
+}
+.sub {
+  color: var(--muted);
+  margin: 0 0 20px;
+}
+
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+table.grid th,
+table.grid td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  white-space: nowrap;
+}
+table.grid th {
+  background: #f8fafc;
+  font-weight: 600;
+  color: var(--muted);
+  position: sticky;
+  top: 0;
+}
+table.grid tr:last-child td {
+  border-bottom: none;
+}
+table.grid input,
+table.grid select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-width: 130px;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.manquant {
+  background: #fee2e2;
+  color: var(--red);
+}
+.badge.rattache {
+  background: #dcfce7;
+  color: var(--green);
+}
+.badge.perdu {
+  background: #f1f5f9;
+  color: var(--muted);
+}
+.badge.sans_objet {
+  background: #e0e7ff;
+  color: #4338ca;
+}
+.badge.verif {
+  background: #fef3c7;
+  color: var(--amber);
+}
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.field input,
+.field select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}

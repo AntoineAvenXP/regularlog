@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Regularlog — outil mono-utilisateur.
+// Principe : CHAQUE document porte un champ `ownerUid`. Un utilisateur ne peut
+// lire/écrire QUE ses propres documents. Aucun accès public, aucun partage.
+// Toute écriture doit estampiller ownerUid == son propre uid.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    // Le document lu/modifié appartient à l'appelant.
+    function owns(data) {
+      return signedIn() && data.ownerUid == request.auth.uid;
+    }
+    // Le document créé/écrit est bien estampillé à l'appelant.
+    function stampsSelf() {
+      return signedIn() && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /{document=**} {
+      allow read:   if owns(resource.data);
+      allow create: if stampsSelf();
+      allow update: if owns(resource.data) && stampsSelf();
+      allow delete: if owns(resource.data);
+    }
+  }
+}
