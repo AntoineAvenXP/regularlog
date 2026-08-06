@@ -6,6 +6,7 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
+import { getFunctions } from "firebase/functions";
 
 // Analytics volontairement NON initialisé (cf. spécification §2).
 const firebaseConfig = {
@@ -35,4 +36,5 @@ try {
 export const db = _db;
 
 export const storage = getStorage(app);
+export const functions = getFunctions(app, "europe-west1");
 export default app;

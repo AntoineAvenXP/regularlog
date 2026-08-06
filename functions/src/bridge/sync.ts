@@ -1,0 +1,169 @@
+import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import {
+  OWNER_UID,
+  REGION,
+  BRIDGE_CLIENT_ID,
+  BRIDGE_CLIENT_SECRET,
+} from "../config";
+import {
+  connectSession,
+  ensureUser,
+  listAccounts,
+  listTransactions,
+  userToken,
+} from "./client";
+import { fingerprint } from "../lib/fingerprint";
+
+const bridgeSecrets = [BRIDGE_CLIENT_ID, BRIDGE_CLIENT_SECRET];
+
+function assertOwner(uid: string | undefined) {
+  if (uid !== OWNER_UID) throw new HttpsError("permission-denied", "Interdit.");
+}
+
+/** Synchronisation incrémentale : Bridge → transactions, dédup vs existant. */
+async function doSync(): Promise<{ added: number; skipped: number }> {
+  const db = getFirestore();
+  const uuid = await ensureUser(OWNER_UID);
+  const token = await userToken(uuid);
+
+  // Comptes Regularlog reliés à un compte Bridge (bridgeAccountId).
+  const accSnap = await db
+    .collection("bankAccounts")
+    .where("ownerUid", "==", OWNER_UID)
+    .get();
+  const accByBridgeId = new Map<string, { id: string; entityId: string }>();
+  accSnap.forEach((d) => {
+    const b = d.data().bridgeAccountId;
+    if (b) accByBridgeId.set(String(b), { id: d.id, entityId: d.data().entityId });
+  });
+
+  // Empreintes + ids d'opération déjà présents (dédup contre imports manuels).
+  const txSnap = await db
+    .collection("transactions")
+    .where("ownerUid", "==", OWNER_UID)
+    .get();
+  const existingFp = new Set<string>();
+  const existingBankOp = new Set<string>();
+  txSnap.forEach((d) => {
+    const t = d.data();
+    if (t.fingerprint) existingFp.add(t.fingerprint);
+    if (t.bankOperationId) existingBankOp.add(String(t.bankOperationId));
+  });
+
+  const bridgeTx = await listTransactions(token);
+  let added = 0;
+  let skipped = 0;
+  let batch = db.batch();
+  let n = 0;
+  for (const bt of bridgeTx) {
+    const acc = accByBridgeId.get(String(bt.account_id));
+    if (!acc) {
+      skipped++;
+      continue; // compte non rattaché dans Regularlog → ignoré
+    }
+    const date = (bt.date ?? bt.booking_date ?? "").slice(0, 10);
+    const montant = Number(bt.amount);
+    const libelle = bt.clean_description ?? bt.provider_description ?? "";
+    if (!date || !Number.isFinite(montant)) {
+      skipped++;
+      continue;
+    }
+    const bankOpId = String(bt.id);
+    const fp = fingerprint(acc.id, date, montant, libelle);
+    if (existingBankOp.has(bankOpId) || existingFp.has(fp)) {
+      skipped++;
+      continue;
+    }
+    const ref = db.collection("transactions").doc();
+    batch.set(ref, {
+      ownerUid: OWNER_UID,
+      bankAccountId: acc.id,
+      entityId: acc.entityId,
+      dateOperation: date,
+      dateValeur: null,
+      libelleBrut: libelle,
+      montant,
+      bankOperationId: bankOpId,
+      fingerprint: fp,
+      codeSuggere: null,
+      codeValide: null,
+      categorie: null,
+      justificatifStatus: "manquant",
+      fluxInterne: false,
+      transactionMiroirId: null,
+      origine: "bridge",
+      aVerifier: false,
+      notes: null,
+      importId: null,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    existingFp.add(fp);
+    existingBankOp.add(bankOpId);
+    added++;
+    n++;
+    if (n >= 400) {
+      await batch.commit();
+      batch = db.batch();
+      n = 0;
+    }
+  }
+  if (n > 0) await batch.commit();
+  return { added, skipped };
+}
+
+/** Ouvre une session de connexion des banques (URL Bridge Connect). */
+export const bridgeConnect = onCall(
+  { region: REGION, secrets: bridgeSecrets, maxInstances: 3 },
+  async (req) => {
+    assertOwner(req.auth?.uid);
+    const uuid = await ensureUser(OWNER_UID);
+    const token = await userToken(uuid);
+    const url = await connectSession(token);
+    return { url };
+  }
+);
+
+/** Liste les comptes Bridge (pour les rattacher aux comptes Regularlog). */
+export const bridgeListAccounts = onCall(
+  { region: REGION, secrets: bridgeSecrets, maxInstances: 3 },
+  async (req) => {
+    assertOwner(req.auth?.uid);
+    const uuid = await ensureUser(OWNER_UID);
+    const token = await userToken(uuid);
+    const accounts = await listAccounts(token);
+    return {
+      accounts: accounts.map((a) => ({
+        id: String(a.id),
+        name: a.name,
+        iban: a.iban ?? null,
+      })),
+    };
+  }
+);
+
+/** Sync manuelle (bouton). */
+export const bridgeSync = onCall(
+  { region: REGION, secrets: bridgeSecrets, maxInstances: 3, timeoutSeconds: 300 },
+  async (req) => {
+    assertOwner(req.auth?.uid);
+    return doSync();
+  }
+);
+
+/** Sync automatique quotidienne (§4.2 : pas plus fréquente). */
+export const bridgeDailySync = onSchedule(
+  {
+    schedule: "every day 05:00",
+    timeZone: "Europe/Paris",
+    region: REGION,
+    secrets: bridgeSecrets,
+    maxInstances: 1,
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const r = await doSync();
+    console.log("[bridgeDailySync]", r);
+  }
+);

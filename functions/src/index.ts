@@ -14,6 +14,7 @@ import { initializeApp } from "firebase-admin/app";
 
 initializeApp();
 
-// export * from "./bridge/sync";      // T6
-// export * from "./mailbox/poll";     // T7
-// export * from "./reconcile/ai";     // T7
+// T6 — Bridge (agrégation bancaire)
+export { bridgeConnect, bridgeListAccounts, bridgeSync, bridgeDailySync } from "./bridge/sync";
+// T7 — Boîte mail + rapprochement IA
+export { mailboxPoll } from "./mailbox/poll";

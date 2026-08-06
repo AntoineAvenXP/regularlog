@@ -10,6 +10,7 @@ const NAV = [
   { href: "/transactions", label: "Transactions" },
   { href: "/flux", label: "Flux internes" },
   { href: "/justificatifs", label: "Justificatifs" },
+  { href: "/validation", label: "File de validation" },
   { href: "/imports", label: "Imports" },
   { href: "/export", label: "Export" },
   { href: "/regles", label: "Règles" },
