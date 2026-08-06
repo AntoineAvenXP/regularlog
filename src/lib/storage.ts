@@ -2,6 +2,7 @@ import {
   ref,
   uploadBytes,
   getDownloadURL,
+  getBytes,
   deleteObject,
 } from "firebase/storage";
 import { storage, auth } from "./firebase";
@@ -30,6 +31,11 @@ export async function uploadFile(path: string, file: File): Promise<void> {
 
 export async function fileUrl(path: string): Promise<string> {
   return getDownloadURL(ref(storage, path));
+}
+
+/** Récupère les octets d'un fichier (pour l'archive ZIP). */
+export async function getFileBytes(path: string): Promise<ArrayBuffer> {
+  return getBytes(ref(storage, path));
 }
 
 export async function deleteFile(path: string): Promise<void> {

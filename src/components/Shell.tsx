@@ -11,6 +11,7 @@ const NAV = [
   { href: "/flux", label: "Flux internes" },
   { href: "/justificatifs", label: "Justificatifs" },
   { href: "/imports", label: "Imports" },
+  { href: "/export", label: "Export" },
   { href: "/regles", label: "Règles" },
   { href: "/parametres", label: "Paramètres" },
 ];
