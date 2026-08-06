@@ -307,7 +307,7 @@ function TxTable() {
       </div>
 
       {selected.size > 0 && (
-        <div className="toolbar" style={{ background: "#eff6ff", padding: 10, borderRadius: 8 }}>
+        <div className="toolbar" style={{ background: "#eaf3e4", padding: 10, borderRadius: 8 }}>
           <strong>{selected.size} sélectionnée(s)</strong>
           <input
             placeholder="Code à appliquer"

@@ -2,14 +2,18 @@
   box-sizing: border-box;
 }
 :root {
-  --bg: #f4f6f9;
-  --surface: #ffffff;
-  --border: #e2e8f0;
-  --text: #0f172a;
-  --muted: #64748b;
-  --primary: #2563eb;
-  --primary-dark: #1d4ed8;
-  --green: #16a34a;
+  /* Charte Regularlog */
+  --sidebar: #0c2328; /* bleu/vert sombre */
+  --bg: #f4f6f5;
+  --surface: #fbfbfb;
+  --border: #e3e8e6;
+  --text: #0c2328;
+  --muted: #7b8888; /* gris clair */
+  --muted-2: #b9c0bf; /* gris très clair */
+  --primary: #90c57a; /* vert clair (accent) */
+  --primary-dark: #7bb063;
+  --on-primary: #0c2328; /* texte sur boutons verts */
+  --green: #4a9e5c;
   --amber: #d97706;
   --red: #dc2626;
   --radius: 10px;
@@ -59,8 +63,8 @@ textarea {
 .sidebar {
   width: 220px;
   flex-shrink: 0;
-  background: #0f1e33;
-  color: #cbd5e1;
+  background: var(--sidebar);
+  color: var(--muted-2);
   display: flex;
   flex-direction: column;
   padding: 18px 12px;
@@ -90,16 +94,17 @@ textarea {
 .sidebar nav a {
   padding: 9px 12px;
   border-radius: 8px;
-  color: #cbd5e1;
+  color: var(--muted-2);
   font-weight: 500;
 }
 .sidebar nav a:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.07);
   color: #fff;
 }
 .sidebar nav a.active {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
+  font-weight: 700;
 }
 .sidebar .logout {
   background: transparent;
@@ -142,11 +147,11 @@ textarea {
 .login button,
 .btn {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   border: none;
   padding: 10px 14px;
   border-radius: 8px;
-  font-weight: 600;
+  font-weight: 700;
 }
 .login button:hover,
 .btn:hover {
