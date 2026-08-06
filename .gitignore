@@ -26,3 +26,7 @@ next-env.d.ts
 
 # typescript build cache
 *.tsbuildinfo
+
+# cloud functions
+functions/node_modules
+functions/lib
