@@ -1,6 +1,10 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import {
+  initializeFirestore,
+  getFirestore,
+  type Firestore,
+} from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 // Analytics volontairement NON initialisé (cf. spécification §2).
@@ -16,6 +20,19 @@ const firebaseConfig = {
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+// Auto-détection du long-polling : évite les blocages infinis quand la
+// connexion streaming (WebChannel) de Firestore est filtrée par une extension
+// (AdBlock…), un proxy ou un réseau restrictif. Repli propre en hot-reload.
+let _db: Firestore;
+try {
+  _db = initializeFirestore(app, {
+    experimentalAutoDetectLongPolling: true,
+  });
+} catch {
+  _db = getFirestore(app);
+}
+export const db = _db;
+
 export const storage = getStorage(app);
 export default app;
