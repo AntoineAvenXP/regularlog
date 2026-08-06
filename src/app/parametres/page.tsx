@@ -3,8 +3,31 @@
 import { useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 import { COL, createOwned, deleteOwned, listOwned } from "@/lib/db";
-import type { BankAccount, Entity } from "@/lib/types";
+import type { AccountingCode, BankAccount, Entity } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
+
+// Plan comptable par défaut PROPOSÉ (seed éditable, pas codé en dur dans la
+// logique) — comptes usuels attendus par la spéc §6.
+const DEFAULT_PLAN: { code: string; libelle: string }[] = [
+  { code: "607", libelle: "Achats de marchandises" },
+  { code: "606", libelle: "Achats non stockés (fournitures, énergie)" },
+  { code: "611", libelle: "Sous-traitance" },
+  { code: "613", libelle: "Locations" },
+  { code: "615", libelle: "Entretien et réparations" },
+  { code: "616", libelle: "Assurances" },
+  { code: "618", libelle: "Services extérieurs divers" },
+  { code: "6226", libelle: "Honoraires" },
+  { code: "625", libelle: "Déplacements, missions, réceptions" },
+  { code: "626", libelle: "Frais postaux et télécoms" },
+  { code: "627", libelle: "Services bancaires" },
+  { code: "641", libelle: "Rémunérations du personnel" },
+  { code: "645", libelle: "Charges sociales" },
+  { code: "512", libelle: "Banque" },
+  { code: "455", libelle: "Compte courant d'associé" },
+  { code: "44566", libelle: "TVA déductible" },
+  { code: "44571", libelle: "TVA collectée" },
+  { code: "21", libelle: "Immobilisations corporelles" },
+];
 
 export default function ParametresPage() {
   return (
@@ -18,15 +41,18 @@ function Parametres() {
   const { user } = useAuth();
   const [entities, setEntities] = useState<Entity[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [codes, setCodes] = useState<AccountingCode[]>([]);
   const [loading, setLoading] = useState(true);
 
   async function reload() {
-    const [e, a] = await Promise.all([
+    const [e, a, c] = await Promise.all([
       listOwned<Entity>(COL.entities),
       listOwned<BankAccount>(COL.accounts),
+      listOwned<AccountingCode>(COL.codes),
     ]);
     setEntities(e);
     setAccounts(a);
+    setCodes(c.sort((x, y) => x.code.localeCompare(y.code)));
     setLoading(false);
   }
   useEffect(() => {
@@ -69,6 +95,25 @@ function Parametres() {
     setABanque("");
     setALibelle("");
     setAIban("");
+    reload();
+  }
+
+  // --- Plan comptable
+  const [cCode, setCCode] = useState("");
+  const [cLabel, setCLabel] = useState("");
+  async function addCode(ev: React.FormEvent) {
+    ev.preventDefault();
+    if (!cCode.trim() || !cLabel.trim()) return;
+    await createOwned(COL.codes, { code: cCode.trim(), libelle: cLabel.trim() });
+    setCCode("");
+    setCLabel("");
+    reload();
+  }
+  async function seedDefaults() {
+    const existing = new Set(codes.map((c) => c.code));
+    for (const d of DEFAULT_PLAN) {
+      if (!existing.has(d.code)) await createOwned(COL.codes, d);
+    }
     reload();
   }
 
@@ -164,6 +209,51 @@ function Parametres() {
           {accounts.length === 0 && <p className="muted">Aucun compte.</p>}
         </section>
       </div>
+
+      {/* Plan comptable éditable (§6) */}
+      <section style={{ marginTop: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <h2 style={{ fontSize: 16 }}>Plan comptable</h2>
+          {codes.length === 0 && (
+            <button className="btn secondary" onClick={seedDefaults}>
+              Charger le plan par défaut
+            </button>
+          )}
+        </div>
+        <form onSubmit={addCode} className="card" style={{ marginBottom: 12 }}>
+          <div className="row">
+            <div className="field" style={{ width: 120 }}>
+              <label>Code</label>
+              <input value={cCode} onChange={(e) => setCCode(e.target.value)} placeholder="645" />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Libellé</label>
+              <input value={cLabel} onChange={(e) => setCLabel(e.target.value)} placeholder="Charges sociales" />
+            </div>
+            <button className="btn" style={{ alignSelf: "flex-end" }}>Ajouter</button>
+          </div>
+        </form>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {codes.map((c) => (
+            <div
+              key={c.id}
+              className="card"
+              style={{ padding: "8px 12px", display: "flex", gap: 10, alignItems: "center" }}
+            >
+              <strong>{c.code}</strong>
+              <span className="muted">{c.libelle}</span>
+              <button
+                onClick={() => deleteOwned(COL.codes, c.id).then(reload)}
+                style={{ background: "none", border: "none", color: "var(--red)", fontWeight: 700 }}
+                title="Supprimer"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {codes.length === 0 && <p className="muted">Aucun compte dans le plan.</p>}
+        </div>
+      </section>
     </div>
   );
 }

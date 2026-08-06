@@ -1,15 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { writeBatch, doc, collection } from "firebase/firestore";
 import Shell from "@/components/Shell";
-import { COL, listOwned, updateOwned } from "@/lib/db";
+import { db } from "@/lib/firebase";
+import { COL, createOwned, listOwned, updateOwned } from "@/lib/db";
 import type {
+  AccountingRule,
   BankAccount,
   Entity,
   JustificatifStatus,
   Transaction,
 } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
+import { suggestCode, defaultMotifFromLibelle } from "@/lib/rules";
 import { useAuth } from "@/lib/auth";
 
 const JUSTIF_STATUS: JustificatifStatus[] = [
@@ -32,7 +36,9 @@ function TxTable() {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [tx, setTx] = useState<Transaction[]>([]);
+  const [rules, setRules] = useState<AccountingRule[]>([]);
   const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState(false);
 
   // Filtres
   const [fEntity, setFEntity] = useState("");
@@ -49,14 +55,16 @@ function TxTable() {
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [e, a, t] = await Promise.all([
+      const [e, a, t, r] = await Promise.all([
         listOwned<Entity>(COL.entities),
         listOwned<BankAccount>(COL.accounts),
         listOwned<Transaction>(COL.transactions),
+        listOwned<AccountingRule>(COL.rules),
       ]);
       setEntities(e);
       setAccounts(a);
       setTx(t.sort((x, y) => (x.dateOperation < y.dateOperation ? 1 : -1)));
+      setRules(r);
       setLoading(false);
     })();
   }, [user]);
@@ -115,6 +123,62 @@ function TxTable() {
     for (const id of ids)
       await updateOwned(COL.transactions, id, { justificatifStatus: "perdu" });
     setSelected(new Set());
+  }
+
+  // Applique le moteur de règles → remplit codeSuggere (jamais codeValide).
+  async function applyRules() {
+    if (rules.length === 0) {
+      alert("Aucune règle définie. Ajoute des règles dans l'onglet Règles.");
+      return;
+    }
+    setApplying(true);
+    try {
+      const changes: { id: string; code: string }[] = [];
+      for (const t of tx) {
+        const s = suggestCode(t.libelleBrut, rules);
+        const code = s?.code ?? null;
+        if (code && code !== (t.codeSuggere ?? null)) changes.push({ id: t.id, code });
+      }
+      for (let i = 0; i < changes.length; i += 400) {
+        const chunk = changes.slice(i, i + 400);
+        const batch = writeBatch(db);
+        for (const c of chunk)
+          batch.update(doc(db, COL.transactions, c.id), { codeSuggere: c.code });
+        await batch.commit();
+      }
+      setTx((prev) =>
+        prev.map((t) => {
+          const c = changes.find((x) => x.id === t.id);
+          return c ? { ...t, codeSuggere: c.code } : t;
+        })
+      );
+      alert(`${changes.length} suggestion(s) mise(s) à jour.`);
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  // À chaque validation manuelle d'un code, propose d'enregistrer une règle (§6).
+  async function proposeRule(t: Transaction, code: string) {
+    const already = suggestCode(t.libelleBrut, rules);
+    if (already && already.code === code) return; // déjà couvert
+    const suggestion = defaultMotifFromLibelle(t.libelleBrut);
+    const motif = window.prompt(
+      `Créer une règle : tout libellé contenant ce motif recevra le code ${code}.\n\nMotif (laisser vide pour ne pas créer) :`,
+      suggestion
+    );
+    if (motif && motif.trim()) {
+      const id = await createOwned(COL.rules, {
+        motif: motif.trim(),
+        code,
+        priorite: 0,
+        libelleCode: null,
+      });
+      setRules((prev) => [
+        ...prev,
+        { id, ownerUid: "", motif: motif.trim(), code, priorite: 0 } as AccountingRule,
+      ]);
+    }
   }
 
   function exportCsv() {
@@ -228,7 +292,16 @@ function TxTable() {
           onChange={(e) => setSearch(e.target.value)}
           style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8, minWidth: 200 }}
         />
-        <button className="btn secondary" onClick={exportCsv} style={{ marginLeft: "auto" }}>
+        <button
+          className="btn secondary"
+          onClick={applyRules}
+          disabled={applying}
+          style={{ marginLeft: "auto" }}
+          title="Remplit les codes suggérés à partir du référentiel de règles"
+        >
+          {applying ? "Application…" : "Appliquer les règles"}
+        </button>
+        <button className="btn secondary" onClick={exportCsv}>
           Exporter CSV
         </button>
       </div>
@@ -292,10 +365,12 @@ function TxTable() {
                 <td>
                   <input
                     defaultValue={t.codeValide ?? ""}
-                    placeholder={t.codeSuggere ?? ""}
-                    onBlur={(e) => {
+                    placeholder={t.codeSuggere ? `suggéré : ${t.codeSuggere}` : ""}
+                    onBlur={async (e) => {
                       const v = e.target.value.trim() || null;
-                      if (v !== (t.codeValide ?? null)) patch(t.id, { codeValide: v });
+                      if (v === (t.codeValide ?? null)) return;
+                      await patch(t.id, { codeValide: v });
+                      if (v) proposeRule(t, v);
                     }}
                   />
                 </td>
