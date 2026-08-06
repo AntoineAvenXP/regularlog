@@ -32,7 +32,8 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="app">
       <aside className="sidebar">
-        <div className="brand">Regularlog</div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/logo.png" alt="Regularlog" className="brand-logo" />
         <nav>
           {NAV.map((n) => (
             <Link

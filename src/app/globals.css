@@ -73,6 +73,14 @@ textarea {
   padding: 6px 10px 16px;
   letter-spacing: 0.02em;
 }
+.sidebar .brand-logo {
+  display: block;
+  width: 100%;
+  max-width: 160px;
+  height: auto;
+  margin: 4px auto 18px;
+  padding: 0 6px;
+}
 .sidebar nav {
   display: flex;
   flex-direction: column;

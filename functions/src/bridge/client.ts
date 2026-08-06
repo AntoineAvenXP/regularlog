@@ -1,11 +1,14 @@
 // Client Bridge API v3 (agrégation bancaire DSP2). TOUS les appels côté serveur
 // (les credentials ne transitent jamais par le navigateur — §4.2).
-// Réf. flux d'auth : POST /users = { external_user_id } ; les autres endpoints
-// exigent un Bearer access_token user-scoped.
+// Flux calqué sur l'intégration éprouvée du projet Athéna :
+//   - POST /v3/aggregation/users            { external_user_id } (création)
+//   - POST /v3/aggregation/authorization/token { external_user_id } → access_token
+//   - autres endpoints : Bearer access_token
+//   - transactions : PAR compte (account_id), paginées via pagination.next_uri
 
 import { BRIDGE_CLIENT_ID, BRIDGE_CLIENT_SECRET } from "../config";
 
-const BASE = "https://api.bridgeapi.io/v3";
+const BASE = "https://api.bridgeapi.io";
 const BRIDGE_VERSION = "2025-01-15";
 
 function baseHeaders(): Record<string, string> {
@@ -30,48 +33,37 @@ async function req<T>(
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Bridge ${opts.method ?? "GET"} ${path} → ${res.status}: ${txt}`);
+    throw new Error(`Bridge ${opts.method ?? "GET"} ${path} → ${res.status}: ${await res.text()}`);
   }
   return (await res.json()) as T;
 }
 
-interface BridgeUser {
-  uuid: string;
-  external_user_id: string;
-}
-
-/** Crée (ou retrouve) l'utilisateur Bridge lié à l'uid propriétaire. */
-export async function ensureUser(externalUserId: string): Promise<string> {
+/**
+ * Jeton d'accès user-scoped à partir de l'external_user_id. Si l'utilisateur
+ * n'existe pas encore, on le crée puis on réessaie (create une seule fois).
+ */
+export async function getToken(externalUserId: string): Promise<string> {
+  const body = { external_user_id: externalUserId };
   try {
-    const u = await req<BridgeUser>("/aggregation/users", {
-      method: "POST",
-      body: { external_user_id: externalUserId },
-    });
-    return u.uuid;
-  } catch {
-    const list = await req<{ resources: BridgeUser[] }>(
-      `/aggregation/users?external_user_id=${encodeURIComponent(externalUserId)}`
+    const t = await req<{ access_token: string }>(
+      "/v3/aggregation/authorization/token",
+      { method: "POST", body }
     );
-    const found = list.resources?.find((x) => x.external_user_id === externalUserId);
-    if (found) return found.uuid;
-    throw new Error("Utilisateur Bridge introuvable.");
+    return t.access_token;
+  } catch {
+    await req<{ uuid: string }>("/v3/aggregation/users", { method: "POST", body });
+    const t = await req<{ access_token: string }>(
+      "/v3/aggregation/authorization/token",
+      { method: "POST", body }
+    );
+    return t.access_token;
   }
-}
-
-/** Jeton d'accès user-scoped (courte durée). */
-export async function userToken(userUuid: string): Promise<string> {
-  const t = await req<{ access_token: string }>(
-    "/aggregation/authorization/token",
-    { method: "POST", body: { user_uuid: userUuid } }
-  );
-  return t.access_token;
 }
 
 /** URL de connexion des banques (Bridge Connect) à ouvrir par l'utilisateur. */
 export async function connectSession(token: string): Promise<string> {
   const s = await req<{ url?: string; redirect_url?: string }>(
-    "/aggregation/connect-sessions",
+    "/v3/aggregation/connect-sessions",
     { method: "POST", token, body: {} }
   );
   return s.url ?? s.redirect_url ?? "";
@@ -81,12 +73,22 @@ export interface BridgeAccount {
   id: number;
   name: string;
   iban?: string | null;
-  balance?: number;
+}
+
+interface Paginated<T> {
+  resources: T[];
+  pagination?: { next_uri?: string | null };
 }
 
 export async function listAccounts(token: string): Promise<BridgeAccount[]> {
-  const r = await req<{ resources: BridgeAccount[] }>("/aggregation/accounts", { token });
-  return r.resources ?? [];
+  const all: BridgeAccount[] = [];
+  let path: string | null = "/v3/aggregation/accounts?limit=200";
+  while (path) {
+    const page: Paginated<BridgeAccount> = await req(path, { token });
+    all.push(...(page.resources ?? []));
+    path = page.pagination?.next_uri ?? null;
+  }
+  return all;
 }
 
 export interface BridgeTransaction {
@@ -99,18 +101,18 @@ export interface BridgeTransaction {
   provider_description?: string;
 }
 
-/** Toutes les transactions (pagination suivie via next_uri). */
-export async function listTransactions(token: string): Promise<BridgeTransaction[]> {
-  const out: BridgeTransaction[] = [];
-  // next_uri renvoyé par Bridge est un chemin relatif (ex. "/v3/aggregation/...").
-  let path: string | null = "/aggregation/transactions?limit=500";
+/** Transactions d'UN compte Bridge (paginées). */
+export async function listTransactions(
+  token: string,
+  accountId: number
+): Promise<BridgeTransaction[]> {
+  const all: BridgeTransaction[] = [];
+  let path: string | null = `/v3/aggregation/transactions?account_id=${accountId}&limit=500`;
   let guard = 0;
-  while (path && guard++ < 200) {
-    const r: { resources: BridgeTransaction[]; pagination?: { next_uri?: string } } =
-      await req(path, { token });
-    out.push(...(r.resources ?? []));
-    const next = r.pagination?.next_uri ?? null;
-    path = next ? next.replace(/^\/v3/, "") : null;
+  while (path && guard++ < 500) {
+    const page: Paginated<BridgeTransaction> = await req(path, { token });
+    all.push(...(page.resources ?? []));
+    path = page.pagination?.next_uri ?? null;
   }
-  return out;
+  return all;
 }

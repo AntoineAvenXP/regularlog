@@ -9,10 +9,9 @@ import {
 } from "../config";
 import {
   connectSession,
-  ensureUser,
+  getToken,
   listAccounts,
   listTransactions,
-  userToken,
 } from "./client";
 import { fingerprint } from "../lib/fingerprint";
 
@@ -25,8 +24,7 @@ function assertOwner(uid: string | undefined) {
 /** Synchronisation incrémentale : Bridge → transactions, dédup vs existant. */
 async function doSync(): Promise<{ added: number; skipped: number }> {
   const db = getFirestore();
-  const uuid = await ensureUser(OWNER_UID);
-  const token = await userToken(uuid);
+  const token = await getToken(OWNER_UID);
 
   // Comptes Regularlog reliés à un compte Bridge (bridgeAccountId).
   const accSnap = await db
@@ -52,61 +50,60 @@ async function doSync(): Promise<{ added: number; skipped: number }> {
     if (t.bankOperationId) existingBankOp.add(String(t.bankOperationId));
   });
 
-  const bridgeTx = await listTransactions(token);
   let added = 0;
   let skipped = 0;
   let batch = db.batch();
   let n = 0;
-  for (const bt of bridgeTx) {
-    const acc = accByBridgeId.get(String(bt.account_id));
-    if (!acc) {
-      skipped++;
-      continue; // compte non rattaché dans Regularlog → ignoré
-    }
-    const date = (bt.date ?? bt.booking_date ?? "").slice(0, 10);
-    const montant = Number(bt.amount);
-    const libelle = bt.clean_description ?? bt.provider_description ?? "";
-    if (!date || !Number.isFinite(montant)) {
-      skipped++;
-      continue;
-    }
-    const bankOpId = String(bt.id);
-    const fp = fingerprint(acc.id, date, montant, libelle);
-    if (existingBankOp.has(bankOpId) || existingFp.has(fp)) {
-      skipped++;
-      continue;
-    }
-    const ref = db.collection("transactions").doc();
-    batch.set(ref, {
-      ownerUid: OWNER_UID,
-      bankAccountId: acc.id,
-      entityId: acc.entityId,
-      dateOperation: date,
-      dateValeur: null,
-      libelleBrut: libelle,
-      montant,
-      bankOperationId: bankOpId,
-      fingerprint: fp,
-      codeSuggere: null,
-      codeValide: null,
-      categorie: null,
-      justificatifStatus: "manquant",
-      fluxInterne: false,
-      transactionMiroirId: null,
-      origine: "bridge",
-      aVerifier: false,
-      notes: null,
-      importId: null,
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    existingFp.add(fp);
-    existingBankOp.add(bankOpId);
-    added++;
-    n++;
-    if (n >= 400) {
-      await batch.commit();
-      batch = db.batch();
-      n = 0;
+
+  // Transactions récupérées PAR compte Bridge rattaché.
+  for (const [bridgeAccId, acc] of accByBridgeId) {
+    const bridgeTx = await listTransactions(token, Number(bridgeAccId));
+    for (const bt of bridgeTx) {
+      const date = (bt.date ?? bt.booking_date ?? "").slice(0, 10);
+      const montant = Number(bt.amount);
+      const libelle = bt.clean_description ?? bt.provider_description ?? "";
+      if (!date || !Number.isFinite(montant)) {
+        skipped++;
+        continue;
+      }
+      const bankOpId = String(bt.id);
+      const fp = fingerprint(acc.id, date, montant, libelle);
+      if (existingBankOp.has(bankOpId) || existingFp.has(fp)) {
+        skipped++;
+        continue;
+      }
+      const ref = db.collection("transactions").doc();
+      batch.set(ref, {
+        ownerUid: OWNER_UID,
+        bankAccountId: acc.id,
+        entityId: acc.entityId,
+        dateOperation: date,
+        dateValeur: null,
+        libelleBrut: libelle,
+        montant,
+        bankOperationId: bankOpId,
+        fingerprint: fp,
+        codeSuggere: null,
+        codeValide: null,
+        categorie: null,
+        justificatifStatus: "manquant",
+        fluxInterne: false,
+        transactionMiroirId: null,
+        origine: "bridge",
+        aVerifier: false,
+        notes: null,
+        importId: null,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      existingFp.add(fp);
+      existingBankOp.add(bankOpId);
+      added++;
+      n++;
+      if (n >= 400) {
+        await batch.commit();
+        batch = db.batch();
+        n = 0;
+      }
     }
   }
   if (n > 0) await batch.commit();
@@ -118,8 +115,7 @@ export const bridgeConnect = onCall(
   { region: REGION, secrets: bridgeSecrets, maxInstances: 3 },
   async (req) => {
     assertOwner(req.auth?.uid);
-    const uuid = await ensureUser(OWNER_UID);
-    const token = await userToken(uuid);
+    const token = await getToken(OWNER_UID);
     const url = await connectSession(token);
     return { url };
   }
@@ -130,8 +126,7 @@ export const bridgeListAccounts = onCall(
   { region: REGION, secrets: bridgeSecrets, maxInstances: 3 },
   async (req) => {
     assertOwner(req.auth?.uid);
-    const uuid = await ensureUser(OWNER_UID);
-    const token = await userToken(uuid);
+    const token = await getToken(OWNER_UID);
     const accounts = await listAccounts(token);
     return {
       accounts: accounts.map((a) => ({
