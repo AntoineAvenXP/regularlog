@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
+import { ContourLines, DotGrid, Fan } from "@/components/Decor";
 
 export default function LoginPage() {
   const { user, loading, login } = useAuth();
@@ -32,27 +33,40 @@ export default function LoginPage() {
 
   return (
     <div className="center">
+      {/* Décor de marque */}
+      <div aria-hidden="true" style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
+        <ContourLines style={{ position: "absolute", top: -30, left: -60, width: 620, opacity: 0.5 }} />
+        <Fan className="" size={300} style={{ position: "absolute", top: -30, right: -20 }} />
+        <DotGrid style={{ position: "absolute", bottom: 60, left: 90, opacity: 0.8 }} />
+        <Fan size={180} style={{ position: "absolute", bottom: -30, left: -40, transform: "rotate(180deg)", opacity: 0.5 }} />
+      </div>
+
       <form onSubmit={submit} className="card login">
-        <h1>Regularlog</h1>
-        <p className="muted" style={{ margin: 0 }}>
-          Reconstitution comptable
-        </p>
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Mot de passe"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        {err && <div className="error">{err}</div>}
-        <button disabled={busy}>{busy ? "…" : "Se connecter"}</button>
+        <div className="login-top">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="Regularlog" />
+          <div className="tag">Reconstitution comptable</div>
+        </div>
+        <div className="login-body">
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Mot de passe"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          {err && <div className="error">{err}</div>}
+          <button className="btn" disabled={busy} style={{ width: "100%", padding: 12 }}>
+            {busy ? "…" : "Se connecter"}
+          </button>
+        </div>
       </form>
     </div>
   );

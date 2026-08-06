@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Shell from "@/components/Shell";
 import { httpsCallable } from "firebase/functions";
+import { Building2, Landmark, BookText, Cable } from "lucide-react";
+import Shell from "@/components/Shell";
+import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { COL, createOwned, deleteOwned, listOwned, updateOwned } from "@/lib/db";
 import { functions } from "@/lib/firebase";
 import type { AccountingCode, BankAccount, Entity } from "@/lib/types";
@@ -126,14 +128,16 @@ function Parametres() {
 
   return (
     <div>
-      <h1 className="page">Paramètres</h1>
-      <p className="sub">Entités et comptes bancaires</p>
+      <PageHeader
+        title="Paramètres"
+        subtitle="Gérez vos entités, comptes bancaires et le plan comptable."
+      />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         {/* Entités */}
-        <section>
-          <h2 style={{ fontSize: 16 }}>Entités</h2>
-          <form onSubmit={addEntity} className="card" style={{ marginBottom: 12 }}>
+        <section className="card">
+          <SectionHeader icon={Building2} title="Entités" />
+          <form onSubmit={addEntity} style={{ marginBottom: 12 }}>
             <div className="field" style={{ marginBottom: 10 }}>
               <label>Dénomination</label>
               <input value={eName} onChange={(e) => setEName(e.target.value)} placeholder="Ma société / Moi" />
@@ -151,10 +155,10 @@ function Parametres() {
                 <input value={eSiren} onChange={(e) => setESiren(e.target.value)} />
               </div>
             </div>
-            <button className="btn">Ajouter l&apos;entité</button>
+            <button className="btn dark">Ajouter l&apos;entité</button>
           </form>
           {entities.map((e) => (
-            <div key={e.id} className="card" style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div key={e.id} style={{ marginBottom: 8, padding: "10px 14px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <strong>{e.denomination}</strong>
                 <span className="muted"> · {e.type}{e.siren ? ` · ${e.siren}` : ""}</span>
@@ -164,13 +168,13 @@ function Parametres() {
               </button>
             </div>
           ))}
-          {entities.length === 0 && <p className="muted">Aucune entité.</p>}
+          {entities.length === 0 && <div className="empty">Aucune entité.</div>}
         </section>
 
         {/* Comptes */}
-        <section>
-          <h2 style={{ fontSize: 16 }}>Comptes bancaires</h2>
-          <form onSubmit={addAccount} className="card" style={{ marginBottom: 12 }}>
+        <section className="card">
+          <SectionHeader icon={Landmark} title="Comptes bancaires" />
+          <form onSubmit={addAccount} style={{ marginBottom: 12 }}>
             <div className="field" style={{ marginBottom: 10 }}>
               <label>Entité de rattachement</label>
               <select value={aEntity} onChange={(e) => setAEntity(e.target.value)}>
@@ -198,7 +202,7 @@ function Parametres() {
             {entities.length === 0 && <p className="muted" style={{ marginTop: 8 }}>Crée d&apos;abord une entité.</p>}
           </form>
           {accounts.map((a) => (
-            <div key={a.id} className="card" style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div key={a.id} style={{ marginBottom: 8, padding: "10px 14px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <strong>{a.libelle}</strong>
                 <span className="muted"> · {a.banque} · {entName(a.entityId)}{a.ibanPartiel ? ` · ${a.ibanPartiel}` : ""}</span>
@@ -208,21 +212,21 @@ function Parametres() {
               </button>
             </div>
           ))}
-          {accounts.length === 0 && <p className="muted">Aucun compte.</p>}
+          {accounts.length === 0 && <div className="empty">Aucun compte.</div>}
         </section>
       </div>
 
       {/* Plan comptable éditable (§6) */}
-      <section style={{ marginTop: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <h2 style={{ fontSize: 16 }}>Plan comptable</h2>
+      <section className="card" style={{ marginTop: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <SectionHeader icon={BookText} title="Plan comptable" />
           {codes.length === 0 && (
             <button className="btn secondary" onClick={seedDefaults}>
               Charger le plan par défaut
             </button>
           )}
         </div>
-        <form onSubmit={addCode} className="card" style={{ marginBottom: 12 }}>
+        <form onSubmit={addCode} style={{ marginBottom: 14 }}>
           <div className="row">
             <div className="field" style={{ width: 120 }}>
               <label>Code</label>
@@ -237,23 +241,19 @@ function Parametres() {
         </form>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           {codes.map((c) => (
-            <div
-              key={c.id}
-              className="card"
-              style={{ padding: "8px 12px", display: "flex", gap: 10, alignItems: "center" }}
-            >
+            <div key={c.id} className="pill">
               <strong>{c.code}</strong>
               <span className="muted">{c.libelle}</span>
               <button
                 onClick={() => deleteOwned(COL.codes, c.id).then(reload)}
-                style={{ background: "none", border: "none", color: "var(--red)", fontWeight: 700 }}
+                style={{ background: "none", border: "none", color: "var(--red)", fontWeight: 700, padding: 0, lineHeight: 1 }}
                 title="Supprimer"
               >
                 ×
               </button>
             </div>
           ))}
-          {codes.length === 0 && <p className="muted">Aucun compte dans le plan.</p>}
+          {codes.length === 0 && <div className="empty">Aucun compte dans le plan.</div>}
         </div>
       </section>
 
@@ -343,14 +343,14 @@ function BridgeSection({
   }
 
   return (
-    <section style={{ marginTop: 28 }}>
-      <h2 style={{ fontSize: 16 }}>Connexion bancaire (Bridge)</h2>
-      <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
+    <section className="card" style={{ marginTop: 20 }}>
+      <SectionHeader icon={Cable} title="Connexion bancaire (Bridge)" />
+      <p className="muted" style={{ marginTop: 0, marginBottom: 14, fontSize: 12.5 }}>
         Remontée automatique des transactions récentes. Les relevés 2024 restent
         importés manuellement (Bridge ne remonte que les 12-24 derniers mois).
       </p>
       <div className="toolbar">
-        <button className="btn" onClick={connect} disabled={!!busy}>
+        <button className="btn dark" onClick={connect} disabled={!!busy}>
           {busy === "connect" ? "…" : "Connecter mes banques"}
         </button>
         <button className="btn secondary" onClick={loadAccounts} disabled={!!busy}>

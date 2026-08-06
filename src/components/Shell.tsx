@@ -3,18 +3,31 @@
 import { type ReactNode, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import {
+  LayoutGrid,
+  ArrowRightLeft,
+  Repeat,
+  FileText,
+  ClipboardCheck,
+  Download,
+  Upload,
+  Workflow,
+  Settings,
+  LogOut,
+} from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { ContourLines, DotGrid, Fan } from "@/components/Decor";
 
 const NAV = [
-  { href: "/", label: "Tableau de bord" },
-  { href: "/transactions", label: "Transactions" },
-  { href: "/flux", label: "Flux internes" },
-  { href: "/justificatifs", label: "Justificatifs" },
-  { href: "/validation", label: "File de validation" },
-  { href: "/imports", label: "Imports" },
-  { href: "/export", label: "Export" },
-  { href: "/regles", label: "Règles" },
-  { href: "/parametres", label: "Paramètres" },
+  { href: "/", label: "Tableau de bord", Icon: LayoutGrid },
+  { href: "/transactions", label: "Transactions", Icon: ArrowRightLeft },
+  { href: "/flux", label: "Flux internes", Icon: Repeat },
+  { href: "/justificatifs", label: "Justificatifs", Icon: FileText },
+  { href: "/validation", label: "File de validation", Icon: ClipboardCheck },
+  { href: "/imports", label: "Imports", Icon: Download },
+  { href: "/export", label: "Export", Icon: Upload },
+  { href: "/regles", label: "Règles", Icon: Workflow },
+  { href: "/parametres", label: "Paramètres", Icon: Settings },
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -32,24 +45,33 @@ export default function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="app">
       <aside className="sidebar">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/logo.png" alt="Regularlog" className="brand-logo" />
+        <div className="brand">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo-mark.png" alt="Regularlog" className="brand-logo" />
+          <div className="brand-name">RegularLog</div>
+        </div>
         <nav>
-          {NAV.map((n) => (
-            <Link
-              key={n.href}
-              href={n.href}
-              className={pathname === n.href ? "active" : ""}
-            >
-              {n.label}
+          {NAV.map(({ href, label, Icon }) => (
+            <Link key={href} href={href} className={pathname === href ? "active" : ""}>
+              <Icon />
+              {label}
             </Link>
           ))}
         </nav>
         <button className="logout" onClick={() => logout()}>
+          <LogOut />
           Déconnexion
         </button>
       </aside>
-      <main className="content">{children}</main>
+
+      <main className="content">
+        <div className="decor" aria-hidden="true">
+          <ContourLines className="decor-contour" />
+          <DotGrid className="decor-dots" />
+          <Fan className="decor-fan" />
+        </div>
+        <div className="content-inner">{children}</div>
+      </main>
     </div>
   );
 }
