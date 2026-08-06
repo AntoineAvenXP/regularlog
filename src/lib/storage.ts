@@ -18,6 +18,12 @@ export function justifPath(justifId: string, filename: string): string {
   return `users/${uid()}/justificatifs/${justifId}/${safe}`;
 }
 
+/** Chemin Storage du fichier source d'un import : users/{uid}/imports/{id}/{fichier}. */
+export function importPath(importId: string, filename: string): string {
+  const safe = filename.replace(/[^\w.\-]/g, "_");
+  return `users/${uid()}/imports/${importId}/${safe}`;
+}
+
 export async function uploadFile(path: string, file: File): Promise<void> {
   await uploadBytes(ref(storage, path), file, { contentType: file.type || undefined });
 }
