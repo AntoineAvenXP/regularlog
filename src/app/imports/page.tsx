@@ -20,9 +20,7 @@ import {
 } from "@/lib/db";
 import type { BankAccount, ColumnMapping, Entity, Transaction } from "@/lib/types";
 import { fingerprint, fmtAmount, parseAmount, parseDate } from "@/lib/parsing";
-import { extractPdfText } from "@/lib/pdfText";
-import { ocrImage } from "@/lib/ocr";
-import { parseStatementText } from "@/lib/statementParse";
+import { extractStatementAI } from "@/lib/aiExtract";
 import { importPath, uploadFile } from "@/lib/storage";
 import { useAuth } from "@/lib/auth";
 
@@ -81,11 +79,10 @@ function ImportWizard() {
   const [colCredit, setColCredit] = useState("");
   const [decimal, setDecimal] = useState<"," | ".">(",");
 
-  // Flux texte (PDF/OCR)
+  // Flux texte (PDF/image) — extraction IA
   const [textRows, setTextRows] = useState<TextRow[]>([]);
   const [extracting, setExtracting] = useState(false);
-  const [ocrProgress, setOcrProgress] = useState<number | null>(null);
-  const [needsOcr, setNeedsOcr] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
 
   const [existingFps, setExistingFps] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -131,8 +128,7 @@ function ImportWizard() {
     setRows([]);
     setTextRows([]);
     setSourceKind(null);
-    setNeedsOcr(false);
-    setOcrProgress(null);
+    setExtractError(null);
   }
 
   async function onFile(f: File) {
@@ -155,26 +151,33 @@ function ImportWizard() {
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const arr = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, raw: false, defval: "" });
       applyRows(arr.map((r) => r.map((c) => String(c ?? ""))));
-    } else if (/\.pdf$/i.test(f.name)) {
-      setKind("pdf");
+    } else if (/\.pdf$/i.test(f.name) || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)) {
+      // PDF ou image → extraction IA (Claude lit le document et renvoie les lignes).
+      const isPdf = /\.pdf$/i.test(f.name);
+      setKind(isPdf ? "pdf" : "ocr");
       setSourceKind("text");
       setExtracting(true);
+      setExtractError(null);
       try {
-        const text = await extractPdfText(f);
-        const dense = text.replace(/\s/g, "").length;
-        if (dense < 40) {
-          // PDF probablement scanné → proposer l'OCR.
-          setNeedsOcr(true);
-        } else {
-          loadTextRows(text);
+        const { rows: aiRows, truncated } = await extractStatementAI(f);
+        setTextRows(
+          aiRows.map((r) => ({
+            date: r.date ?? "",
+            libelle: r.libelle,
+            montant: r.montant != null ? String(r.montant) : "",
+            include: !!(r.date && r.montant != null && r.libelle),
+          }))
+        );
+        if (truncated) {
+          setExtractError(
+            "Relevé long : la fin a peut-être été tronquée. Vérifie les dernières lignes (ou réimporte par pages)."
+          );
         }
+      } catch (e) {
+        setExtractError((e as Error).message);
       } finally {
         setExtracting(false);
       }
-    } else if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)) {
-      setKind("ocr");
-      setSourceKind("text");
-      await runOcr(f);
     }
   }
 
@@ -182,32 +185,6 @@ function ImportWizard() {
     if (all.length === 0) return;
     setHeaders(all[0]);
     setRows(all.slice(1));
-  }
-
-  function loadTextRows(text: string) {
-    const parsed = parseStatementText(text, decimal);
-    setTextRows(
-      parsed.map((r) => ({
-        date: r.date ?? "",
-        libelle: r.libelle,
-        montant: r.montant != null ? String(r.montant) : "",
-        include: !!(r.date && r.montant != null && r.libelle),
-      }))
-    );
-  }
-
-  async function runOcr(f: File) {
-    setExtracting(true);
-    setOcrProgress(0);
-    setNeedsOcr(false);
-    try {
-      const text = await ocrImage(f, (p) => setOcrProgress(p));
-      if (kind === "pdf") setKind("ocr"); // PDF scanné passé à l'OCR
-      loadTextRows(text);
-    } finally {
-      setExtracting(false);
-      setOcrProgress(null);
-    }
   }
 
   useEffect(() => {
@@ -456,16 +433,11 @@ function ImportWizard() {
         )}
         {extracting && (
           <p className="muted" style={{ marginTop: 8 }}>
-            {ocrProgress != null ? `OCR en cours… ${Math.round(ocrProgress * 100)} %` : "Lecture du fichier…"}
+            Lecture du relevé par l&apos;IA…
           </p>
         )}
-        {needsOcr && currentFile && (
-          <div style={{ marginTop: 8 }}>
-            <p className="muted" style={{ margin: "0 0 6px" }}>
-              Ce PDF ne contient pas de texte lisible (probablement scanné). Lancer l&apos;OCR (gratuit, plus lent) ?
-            </p>
-            <button className="btn" onClick={() => runOcr(currentFile)}>Lancer l&apos;OCR</button>
-          </div>
+        {extractError && (
+          <p style={{ marginTop: 8, color: "var(--amber)" }}>{extractError}</p>
         )}
       </div>
 
@@ -546,7 +518,7 @@ function ImportWizard() {
       {sourceKind === "text" && textRows.length > 0 && account && (
         <>
           <div className="card" style={{ marginBottom: 12, borderColor: "var(--amber)" }}>
-            <strong>Écran de vérification</strong> — lignes extraites {kind === "ocr" ? "par OCR" : "du PDF"}.
+            <strong>Écran de vérification</strong> — lignes extraites par l&apos;IA.
             Corrige avant d&apos;importer : elles seront marquées <span className="badge verif">à vérifier</span>.
             Montant négatif = débit.
           </div>
@@ -586,7 +558,7 @@ function ImportWizard() {
         </>
       )}
 
-      {sourceKind === "text" && !extracting && textRows.length === 0 && !needsOcr && fileName && (
+      {sourceKind === "text" && !extracting && textRows.length === 0 && !extractError && fileName && (
         <p className="muted">Aucune ligne exploitable détectée dans ce fichier.</p>
       )}
     </div>
