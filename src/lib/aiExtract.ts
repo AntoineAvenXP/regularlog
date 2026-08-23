@@ -6,6 +6,7 @@ export interface AiStatementRow {
   date: string | null;
   libelle: string;
   montant: number | null;
+  categorie?: string | null;
 }
 
 /** Compte détecté sur le relevé (sert à rattacher automatiquement). */
@@ -39,12 +40,13 @@ function normalizeResult(data: unknown): AiExtractResult {
  */
 export async function extractStatementImage(
   base64: string,
-  mediaType: string
+  mediaType: string,
+  categories: string[] = []
 ): Promise<AiExtractResult> {
   const res = await fetch("/api/extract-statement", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image: base64, mediaType }),
+    body: JSON.stringify({ image: base64, mediaType, categories }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

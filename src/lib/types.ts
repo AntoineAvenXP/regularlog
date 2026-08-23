@@ -211,7 +211,12 @@ export interface DetectedAccount {
   usage: Usage | null;
 }
 
-export type StatementRow = { date: string | null; libelle: string; montant: number | null };
+export type StatementRow = {
+  date: string | null;
+  libelle: string;
+  montant: number | null;
+  categorie?: string | null;
+};
 
 /**
  * Un compte détecté DANS un relevé. Un même fichier peut en contenir plusieurs

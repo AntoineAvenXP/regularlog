@@ -156,13 +156,14 @@ async function mapLimit<T, R>(
  */
 export async function extractFromImages(
   pages: string[],
+  categories: string[] = [],
   onProgress?: (done: number, total: number) => void
 ): Promise<StatementExtractResult> {
   const total = pages.length;
   let done = 0;
 
   const perPage = await mapLimit(pages, CONCURRENCY, async (img) => {
-    const r = await extractStatementImage(img, "image/jpeg");
+    const r = await extractStatementImage(img, "image/jpeg", categories);
     done += 1;
     onProgress?.(done, total);
     return r;

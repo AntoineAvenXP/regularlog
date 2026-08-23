@@ -24,6 +24,7 @@ import {
 } from "./statementExtract";
 import { fingerprint, parseDate } from "./parsing";
 import { hashFile, weakKey, writeImport, type TxDraft } from "./importWrite";
+import { DEFAULT_CATEGORIES } from "./categories";
 import {
   deleteFile,
   getFileBytes,
@@ -33,6 +34,7 @@ import {
 } from "./storage";
 import type {
   BankAccount,
+  Category,
   Entity,
   Statement,
   StatementPart,
@@ -103,8 +105,7 @@ export interface StatementsCtx {
   accounts: BankAccount[];
   entities: Entity[];
   addFiles: (files: FileList | File[]) => Promise<string[]>;
-  assignAccount: (st: Statement, partKey: string, accountId: string) => Promise<void>;
-  createAccountFor: (st: Statement, partKey: string, entityId: string) => Promise<void>;
+  setPartUsage: (st: Statement, partKey: string, usage: Usage) => Promise<void>;
   retry: (st: Statement) => Promise<void>;
   remove: (st: Statement) => Promise<void>;
 }
@@ -123,6 +124,9 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
   statementsRef.current = statements;
   const accountsRef = useRef<BankAccount[]>([]);
   accountsRef.current = accounts;
+  const entitiesRef = useRef<Entity[]>([]);
+  entitiesRef.current = entities;
+  const categoriesRef = useRef<string[]>([]);
   const importHashesRef = useRef<Set<string>>(new Set());
   const filesRef = useRef<Map<string, File>>(new Map());
 
@@ -140,14 +144,18 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadAux = useCallback(async () => {
-    const [acc, ent, imports] = await Promise.all([
+    const [acc, ent, imports, cats] = await Promise.all([
       listOwned<BankAccount>(COL.accounts),
       listOwned<Entity>(COL.entities),
       listOwned<{ id: string; fileHash?: string | null }>(COL.imports),
+      listOwned<Category>(COL.categories),
     ]);
     setAccounts(acc);
     setEntities(ent);
     importHashesRef.current = new Set(imports.map((i) => i.fileHash).filter(Boolean) as string[]);
+    // Liste passée à l'IA pour catégoriser : celle de l'utilisateur, sinon défaut.
+    const names = cats.map((c) => c.nom).filter(Boolean);
+    categoriesRef.current = names.length ? names : DEFAULT_CATEGORIES;
   }, []);
 
   const autoMatch = useCallback((det: StatementPart["detected"]): string => {
@@ -170,6 +178,50 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     }
     return "";
   }, []);
+
+  /** Entité de rattachement d'un compte détecté (créée au besoin, sans friction). */
+  async function getOrCreateEntity(det: StatementPart["detected"]): Promise<string> {
+    const usage = det?.usage ?? "perso";
+    const name = det?.titulaire?.trim() || (usage === "pro" ? "Professionnel" : "Personnel");
+    const type = usage === "pro" ? "societe" : "personnel";
+    const found = entitiesRef.current.find(
+      (e) => e.denomination.toLowerCase() === name.toLowerCase()
+    );
+    if (found) return found.id;
+    const id = await createOwned(COL.entities, { denomination: name, type, siren: null });
+    const ent: Entity = { id, ownerUid: "", denomination: name, type, siren: null };
+    entitiesRef.current = [...entitiesRef.current, ent];
+    setEntities((prev) => [...prev, ent]);
+    return id;
+  }
+
+  /** Compte Regularlog pour un compte détecté : rattaché s'il existe, sinon créé. */
+  async function resolveOrCreateAccount(det: StatementPart["detected"]): Promise<string> {
+    const matched = autoMatch(det);
+    if (matched) return matched;
+    const entityId = await getOrCreateEntity(det);
+    const id = await createOwned(COL.accounts, {
+      entityId,
+      banque: det?.banque || "Banque",
+      libelle: det?.banque || det?.titulaire || "Compte importé",
+      ibanPartiel: iban4(det?.iban),
+      source: "import" as const,
+      bridgeAccountId: null,
+    });
+    const acc: BankAccount = {
+      id,
+      ownerUid: "",
+      entityId,
+      banque: det?.banque || "Banque",
+      libelle: det?.banque || det?.titulaire || "Compte importé",
+      ibanPartiel: iban4(det?.iban),
+      source: "import",
+      bridgeAccountId: null,
+    };
+    accountsRef.current = [...accountsRef.current, acc];
+    setAccounts((prev) => [...prev, acc]);
+    return id;
+  }
 
   async function buildDedup(accountId: string) {
     const all = await listOwned<Transaction>(COL.transactions);
@@ -201,7 +253,14 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
         const fp = fingerprint(accountId, d, m, r.libelle.trim());
         if (existing.has(fp) || seen.has(fp)) continue;
         seen.add(fp);
-        drafts.push({ dateOperation: d, dateValeur: null, libelle: r.libelle.trim(), montant: m, fp });
+        drafts.push({
+          dateOperation: d,
+          dateValeur: null,
+          libelle: r.libelle.trim(),
+          montant: m,
+          fp,
+          categorie: r.categorie ?? null,
+        });
         const bId = bridgeWeak.get(weakKey(d, m));
         if (bId) supersede.add(bId);
       }
@@ -266,7 +325,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const { groups } = await extractFromImages(pages, (done, total) =>
+        const { groups } = await extractFromImages(pages, categoriesRef.current, (done, total) =>
           setProgress((p) => ({ ...p, [st.id]: { done, total } }))
         );
         setProgress((p) => {
@@ -282,6 +341,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
             date: r.date ?? null,
             libelle: r.libelle,
             montant: r.montant,
+            categorie: r.categorie ?? null,
           }));
           const nbRows = cleanRows.filter((r) => r.date && r.montant != null && r.libelle).length;
           if (nbRows === 0) return;
@@ -290,15 +350,14 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           seenKeys.add(key);
           parts.push({
             key,
-            detected: g.account
-              ? {
-                  banque: g.account.banque,
-                  iban: g.account.iban,
-                  titulaire: g.account.titulaire,
-                  periode: g.account.periode,
-                  usage: (g.account.usage ?? null) as Usage | null,
-                }
-              : null,
+            // usage toujours renseigné (défaut « perso ») → toggle + tag transaction.
+            detected: {
+              banque: g.account?.banque ?? null,
+              iban: g.account?.iban ?? null,
+              titulaire: g.account?.titulaire ?? null,
+              periode: g.account?.periode ?? null,
+              usage: (g.account?.usage ?? "perso") as Usage,
+            },
             rows: cleanRows,
             nbRows,
             resolvedAccountId: null,
@@ -315,14 +374,15 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        let cur: Statement = { ...st, parts, nbRows: totalRows, status: statusFromParts(parts) };
-        await updateOwned(COL.statements, st.id, { parts, nbRows: totalRows, status: cur.status });
-        patch(st.id, { parts, nbRows: totalRows, status: cur.status });
+        let cur: Statement = { ...st, parts, nbRows: totalRows, status: "ready" };
+        await updateOwned(COL.statements, st.id, { parts, nbRows: totalRows, status: "ready" });
+        patch(st.id, { parts, nbRows: totalRows, status: "ready" });
 
-        // Auto-import des comptes reconnus automatiquement.
+        // Aucun rattachement manuel : chaque compte détecté est rattaché à un
+        // compte existant (par IBAN/banque) ou créé automatiquement, puis importé.
         for (const p of parts) {
-          const matched = autoMatch(p.detected);
-          if (matched) cur = await importPart(cur, p.key, matched);
+          const accountId = await resolveOrCreateAccount(p.detected);
+          cur = await importPart(cur, p.key, accountId);
         }
       } catch (e) {
         const msg = (e as Error).message;
@@ -437,41 +497,34 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     [enqueue]
   );
 
-  const assignAccount = useCallback(
-    async (st: Statement, partKey: string, accountId: string) => {
-      if (accountId) await importPart(st, partKey, accountId);
-    },
-    [importPart]
-  );
+  /** Bascule pro/perso d'un compte détecté → se propage à ses transactions. */
+  const setPartUsage = useCallback(
+    async (st: Statement, partKey: string, usage: Usage) => {
+      const parts = (st.parts ?? []).map((p) =>
+        p.key === partKey
+          ? {
+              ...p,
+              detected: p.detected
+                ? { ...p.detected, usage }
+                : { banque: null, iban: null, titulaire: null, periode: null, usage },
+            }
+          : p
+      );
+      await updateOwned(COL.statements, st.id, { parts });
+      patch(st.id, { parts });
 
-  const createAccountFor = useCallback(
-    async (st: Statement, partKey: string, entityId: string) => {
       const part = (st.parts ?? []).find((p) => p.key === partKey);
-      if (!entityId || !part?.detected) return;
-      const det = part.detected;
-      const id = await createOwned(COL.accounts, {
-        entityId,
-        banque: det.banque || "Banque",
-        libelle: det.banque || det.titulaire || st.fileName,
-        ibanPartiel: iban4(det.iban),
-        source: "import" as const,
-        bridgeAccountId: null,
-      });
-      const newAcc: BankAccount = {
-        id,
-        ownerUid: "",
-        entityId,
-        banque: det.banque || "Banque",
-        libelle: det.banque || st.fileName,
-        ibanPartiel: iban4(det.iban),
-        source: "import",
-        bridgeAccountId: null,
-      };
-      accountsRef.current = [...accountsRef.current, newAcc];
-      setAccounts((prev) => [...prev, newAcc]);
-      await importPart(st, partKey, id);
+      if (part?.importId) {
+        const all = await listOwned<Transaction>(COL.transactions);
+        const toUpd = all.filter((t) => t.importId === part.importId);
+        for (let i = 0; i < toUpd.length; i += 400) {
+          const b = writeBatch(db);
+          for (const t of toUpd.slice(i, i + 400)) b.update(doc(db, COL.transactions, t.id), { usage });
+          await b.commit();
+        }
+      }
     },
-    [importPart]
+    [patch]
   );
 
   const retry = useCallback(
@@ -524,8 +577,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     accounts,
     entities,
     addFiles,
-    assignAccount,
-    createAccountFor,
+    setPartUsage,
     retry,
     remove,
   };

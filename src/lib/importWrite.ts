@@ -26,6 +26,7 @@ export interface TxDraft {
   libelle: string;
   montant: number;
   fp: string;
+  categorie?: string | null;
 }
 
 export interface WriteImportParams {
@@ -137,7 +138,7 @@ export async function writeImport(
         fingerprint: p.fp,
         codeSuggere: null,
         codeValide: null,
-        categorie: null,
+        categorie: p.categorie ?? null,
         usage: usage ?? null,
         justificatifStatus: "manquant",
         fluxInterne: false,

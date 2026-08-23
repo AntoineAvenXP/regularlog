@@ -15,6 +15,7 @@ interface ExtractedRow {
   date: string | null;
   libelle: string;
   montant: number | null;
+  categorie: string | null;
 }
 
 interface DetectedAccount {
@@ -25,12 +26,22 @@ interface DetectedAccount {
   usage: "pro" | "perso" | null; // professionnel ou personnel, déduit du relevé
 }
 
-const PROMPT =
+function buildPrompt(categories: string[]): string {
+  const catRule =
+    categories.length > 0
+      ? "- categorie = LA catégorie la plus adaptée à l'opération, choisie EXACTEMENT dans cette liste : [" +
+        categories.join(", ") +
+        "]. Si vraiment aucune ne convient, mets null.\n"
+      : '- categorie = courte catégorie usuelle de l\'opération (ex. "Nourriture", "Énergie", "Transport", "Salaires"), sinon null.\n';
+  return PROMPT_HEAD + catRule + PROMPT_TAIL;
+}
+
+const PROMPT_HEAD =
   "Ce document est un relevé de compte bancaire. Tu dois (1) identifier le compte " +
   "et (2) extraire TOUTES les lignes d'opération, sans en oublier ni en inventer.\n" +
   "Réponds UNIQUEMENT par un objet JSON strict, sans aucun texte autour, au format :\n" +
   '{"compte":{"banque":"texte|null","iban":"texte|null","titulaire":"texte|null","periode":"AAAA-MM|null","usage":"pro|perso|null"},' +
-  '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre}]}\n' +
+  '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre,"categorie":"texte|null"}]}\n' +
   "IMPORTANT — plusieurs comptes possibles : un même document (ou une même page) " +
   "peut concerner PLUSIEURS comptes bancaires différents. Repère-les grâce à leur " +
   "NUMÉRO DE COMPTE / IBAN. Le champ \"compte\" doit décrire le compte auquel " +
@@ -51,9 +62,11 @@ const PROMPT =
   "- date = date d'opération (à défaut date de valeur), format ISO AAAA-MM-JJ.\n" +
   "- libelle = libellé complet de l'opération (bénéficiaire, motif, référence).\n" +
   "- montant = montant signé en euros : NEGATIF pour un débit / retrait / paiement / prélèvement, " +
-  "POSITIF pour un crédit / virement reçu / versement. Point décimal, pas de symbole ni de séparateur de milliers.\n" +
+  "POSITIF pour un crédit / virement reçu / versement. Point décimal, pas de symbole ni de séparateur de milliers.\n";
+
+const PROMPT_TAIL =
   "- Ignore les soldes, totaux, sous-totaux, en-têtes et pieds de page : uniquement les opérations.\n" +
-  "- Si aucune opération n'est lisible, renvoie \"operations\":[] (mais remplis \"compte\" si possible)." ;
+  "- Si aucune opération n'est lisible, renvoie \"operations\":[] (mais remplis \"compte\" si possible).";
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -72,13 +85,18 @@ export async function POST(req: NextRequest) {
   let name = "";
   let image = "";
   let mediaTypeIn = "";
+  let categories: string[] = [];
   try {
     const body = (await req.json()) as {
       url?: string;
       name?: string;
       image?: string;
       mediaType?: string;
+      categories?: string[];
     };
+    categories = Array.isArray(body.categories)
+      ? body.categories.filter((c) => typeof c === "string" && c.trim()).slice(0, 60)
+      : [];
     url = typeof body.url === "string" ? body.url : "";
     name = typeof body.name === "string" ? body.name : "";
     image = typeof body.image === "string" ? body.image : "";
@@ -141,7 +159,7 @@ export async function POST(req: NextRequest) {
   } else {
     return NextResponse.json({ error: "Aucun fichier fourni." }, { status: 400 });
   }
-  content.push({ type: "text", text: PROMPT });
+  content.push({ type: "text", text: buildPrompt(categories) });
 
   let resp: Response;
   try {
@@ -235,6 +253,8 @@ export async function POST(req: NextRequest) {
       libelle: typeof o.libelle === "string" ? o.libelle : "",
       montant:
         m != null && m !== "" && !Number.isNaN(Number(m)) ? Number(m) : null,
+      categorie:
+        typeof o.categorie === "string" && o.categorie.trim() ? o.categorie.trim() : null,
     };
   });
 
