@@ -36,5 +36,10 @@ try {
 export const db = _db;
 
 export const storage = getStorage(app);
+// Relevés scannés parfois lourds : on laisse plus de temps aux upload/download
+// avant d'abandonner (défaut = 2 min → erreur storage/retry-limit-exceeded).
+storage.maxUploadRetryTime = 600000; // 10 min
+storage.maxOperationRetryTime = 300000; // 5 min
+
 export const functions = getFunctions(app, "europe-west1");
 export default app;

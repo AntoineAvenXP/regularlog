@@ -1,6 +1,7 @@
 import {
   ref,
   uploadBytes,
+  uploadBytesResumable,
   getDownloadURL,
   getBytes,
   deleteObject,
@@ -44,6 +45,32 @@ export async function uploadBlob(path: string, blob: Blob, contentType: string):
 
 export async function uploadFile(path: string, file: File): Promise<void> {
   await uploadBytes(ref(storage, path), file, { contentType: file.type || undefined });
+}
+
+/**
+ * Upload résilient (résumable, chunké) — pour les gros fichiers (relevés scannés
+ * de plusieurs Mo) où l'envoi en un bloc peut expirer (retry-limit-exceeded).
+ * `onProgress` reçoit un ratio 0..1.
+ */
+export function uploadFileResumable(
+  path: string,
+  file: File,
+  onProgress?: (ratio: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const task = uploadBytesResumable(ref(storage, path), file, {
+      contentType: file.type || undefined,
+    });
+    task.on(
+      "state_changed",
+      (snap) => {
+        if (onProgress && snap.totalBytes > 0)
+          onProgress(snap.bytesTransferred / snap.totalBytes);
+      },
+      (err) => reject(err),
+      () => resolve()
+    );
+  });
 }
 
 export async function fileUrl(path: string): Promise<string> {

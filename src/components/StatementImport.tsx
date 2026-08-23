@@ -26,7 +26,7 @@ import {
   fileUrl,
   isPdf,
   statementPath,
-  uploadFile,
+  uploadFileResumable,
 } from "@/lib/storage";
 import type {
   BankAccount,
@@ -81,6 +81,9 @@ export default function StatementImport({
 
   const accountsRef = useRef<BankAccount[]>(accounts);
   accountsRef.current = accounts;
+
+  // Fichiers déposés cette session (pour ré-uploader en cas d'échec réseau).
+  const filesRef = useRef<Map<string, File>>(new Map());
 
   const patch = useCallback(
     (id: string, p: Partial<Statement>) =>
@@ -319,15 +322,12 @@ export default function StatementImport({
           nbRows: 0,
           nbImported: 0,
         });
-        const path = statementPath(id, file.name);
-        await uploadFile(path, file);
-        await updateOwned(COL.statements, id, { storagePath: path });
         const st: Statement = {
           id,
           ownerUid: "",
           fileName: file.name,
           fileHash: hash ?? null,
-          storagePath: path,
+          storagePath: "",
           status: "processing",
           detected: null,
           resolvedAccountId: null,
@@ -336,13 +336,32 @@ export default function StatementImport({
           nbImported: 0,
         };
         setStatements((prev) => [st, ...prev]);
-        toProcess.push(id);
+        filesRef.current.set(id, file);
+        const ok = await doUpload(id, file);
+        if (ok) toProcess.push(id);
       }
       setRejected(rej);
       if (toProcess.length) enqueue(toProcess);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [statements, existingFileHashes, enqueue]
   );
+
+  /** Upload résilient du relevé ; marque l'erreur sur la ligne en cas d'échec. */
+  async function doUpload(id: string, file: File): Promise<boolean> {
+    const path = statementPath(id, file.name);
+    try {
+      await uploadFileResumable(path, file);
+      await updateOwned(COL.statements, id, { storagePath: path });
+      patch(id, { storagePath: path });
+      return true;
+    } catch (e) {
+      const msg = "Échec de l'envoi du fichier : " + (e as Error).message;
+      await updateOwned(COL.statements, id, { status: "error", error: msg });
+      patch(id, { status: "error", error: msg });
+      return false;
+    }
+  }
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -384,6 +403,18 @@ export default function StatementImport({
   async function retry(st: Statement) {
     await updateOwned(COL.statements, st.id, { status: "processing", error: null });
     patch(st.id, { status: "processing", error: null });
+    // Si le fichier n'a jamais été envoyé (échec upload), on ré-uploade d'abord.
+    if (!st.storagePath) {
+      const file = filesRef.current.get(st.id);
+      if (!file) {
+        const msg = "Fichier non disponible (page rechargée). Re-dépose le relevé.";
+        await updateOwned(COL.statements, st.id, { status: "error", error: msg });
+        patch(st.id, { status: "error", error: msg });
+        return;
+      }
+      const ok = await doUpload(st.id, file);
+      if (!ok) return;
+    }
     enqueue([st.id]);
   }
 
@@ -578,7 +609,7 @@ function StatementRow({
             )}
           </div>
           <div className="filecard-meta">
-            {st.status === "processing" && "Lecture par l'IA…"}
+            {st.status === "processing" && "Envoi et lecture par l'IA…"}
             {st.status === "empty" && (
               <span style={{ color: "var(--amber)" }}>
                 Aucune opération détectée (ce fichier n&apos;est peut-être pas un relevé bancaire).
