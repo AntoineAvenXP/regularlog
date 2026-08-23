@@ -30,3 +30,6 @@ next-env.d.ts
 # cloud functions
 functions/node_modules
 functions/lib
+
+# Log du serveur de dev local
+dev.log
