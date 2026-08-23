@@ -22,6 +22,7 @@ export const COL = {
   mappings: "columnMappings",
   rules: "accountingRules",
   codes: "accountingCodes",
+  categories: "categories",
   imports: "imports",
 } as const;
 

@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Building2, Landmark, BookText } from "lucide-react";
+import { Building2, Landmark, BookText, Tags } from "lucide-react";
 import Shell from "@/components/Shell";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { COL, createOwned, deleteOwned, listOwned } from "@/lib/db";
-import type { AccountingCode, BankAccount, Entity } from "@/lib/types";
+import { DEFAULT_CATEGORIES } from "@/lib/categories";
+import type { AccountingCode, BankAccount, Category, Entity } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
 
 // Plan comptable par défaut PROPOSÉ (seed éditable, pas codé en dur dans la
@@ -44,17 +45,22 @@ function Parametres() {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [codes, setCodes] = useState<AccountingCode[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
 
   async function reload() {
-    const [e, a, c] = await Promise.all([
+    const [e, a, c, cat] = await Promise.all([
       listOwned<Entity>(COL.entities),
       listOwned<BankAccount>(COL.accounts),
       listOwned<AccountingCode>(COL.codes),
+      listOwned<Category>(COL.categories),
     ]);
     setEntities(e);
     setAccounts(a);
     setCodes(c.sort((x, y) => x.code.localeCompare(y.code)));
+    setCategories(
+      cat.sort((x, y) => (x.ordre ?? 0) - (y.ordre ?? 0) || x.nom.localeCompare(y.nom))
+    );
     setLoading(false);
   }
   useEffect(() => {
@@ -115,6 +121,30 @@ function Parametres() {
     const existing = new Set(codes.map((c) => c.code));
     for (const d of DEFAULT_PLAN) {
       if (!existing.has(d.code)) await createOwned(COL.codes, d);
+    }
+    reload();
+  }
+
+  // --- Catégories usuelles
+  const [catName, setCatName] = useState("");
+  async function addCategory(ev: React.FormEvent) {
+    ev.preventDefault();
+    const nom = catName.trim();
+    if (!nom) return;
+    if (categories.some((c) => c.nom.toLowerCase() === nom.toLowerCase())) {
+      setCatName("");
+      return;
+    }
+    await createOwned(COL.categories, { nom, ordre: categories.length });
+    setCatName("");
+    reload();
+  }
+  async function seedCategories() {
+    const existing = new Set(categories.map((c) => c.nom.toLowerCase()));
+    let ordre = categories.length;
+    for (const nom of DEFAULT_CATEGORIES) {
+      if (!existing.has(nom.toLowerCase()))
+        await createOwned(COL.categories, { nom, ordre: ordre++ });
     }
     reload();
   }
@@ -252,6 +282,46 @@ function Parametres() {
             </div>
           ))}
           {codes.length === 0 && <div className="empty">Aucun compte dans le plan.</div>}
+        </div>
+      </section>
+
+      {/* Catégories usuelles éditables (nourriture, énergie…) */}
+      <section className="card" style={{ marginTop: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <SectionHeader icon={Tags} title="Catégories" />
+          {categories.length === 0 && (
+            <button className="btn secondary" onClick={seedCategories}>
+              Charger les catégories usuelles
+            </button>
+          )}
+        </div>
+        <p className="muted" style={{ marginTop: 0, marginBottom: 14, fontSize: 12.5 }}>
+          Catégories lisibles proposées sur chaque transaction (distinctes du plan
+          comptable). Modifiables à volonté.
+        </p>
+        <form onSubmit={addCategory} style={{ marginBottom: 14 }}>
+          <div className="row">
+            <div className="field" style={{ flex: 1 }}>
+              <label>Nouvelle catégorie</label>
+              <input value={catName} onChange={(e) => setCatName(e.target.value)} placeholder="Nourriture, Énergie…" />
+            </div>
+            <button className="btn" style={{ alignSelf: "flex-end" }}>Ajouter</button>
+          </div>
+        </form>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {categories.map((c) => (
+            <div key={c.id} className="pill">
+              <span>{c.nom}</span>
+              <button
+                onClick={() => deleteOwned(COL.categories, c.id).then(reload)}
+                style={{ background: "none", border: "none", color: "var(--red)", fontWeight: 700, padding: 0, lineHeight: 1 }}
+                title="Supprimer"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {categories.length === 0 && <div className="empty">Aucune catégorie.</div>}
         </div>
       </section>
 

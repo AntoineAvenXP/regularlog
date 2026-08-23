@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Shell from "@/components/Shell";
 import { COL, listOwned } from "@/lib/db";
 import type { Entity, ReconciliationProposal, Transaction } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
+import { entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
+import { useUsageFilter } from "@/lib/usageFilter";
 import { useAuth } from "@/lib/auth";
 
 export default function HomePage() {
@@ -31,7 +33,8 @@ function monthsSince(start: string): string[] {
 
 function Dashboard() {
   const { user } = useAuth();
-  const [tx, setTx] = useState<Transaction[]>([]);
+  const { mode } = useUsageFilter();
+  const [allTx, setAllTx] = useState<Transaction[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [recon, setRecon] = useState<ReconciliationProposal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,12 +47,18 @@ function Dashboard() {
         listOwned<Entity>(COL.entities),
         listOwned<ReconciliationProposal>(COL.reconciliations),
       ]);
-      setTx(t);
+      setAllTx(t);
       setEntities(e);
       setRecon(r);
       setLoading(false);
     })();
   }, [user]);
+
+  const typeById = useMemo(() => entityTypeMap(entities), [entities]);
+  const tx = useMemo(
+    () => allTx.filter((t) => matchesUsage(t, mode, typeById)),
+    [allTx, mode, typeById]
+  );
 
   if (loading) return <p className="muted">Chargement…</p>;
 
@@ -77,6 +86,19 @@ function Dashboard() {
     cur.montant += t.montant;
     byCode.set(c, cur);
   }
+  // Répartition par catégorie usuelle
+  const byCategorie = new Map<string, { count: number; montant: number }>();
+  for (const t of tx) {
+    const c = t.categorie || "(sans catégorie)";
+    const cur = byCategorie.get(c) ?? { count: 0, montant: 0 };
+    cur.count += 1;
+    cur.montant += t.montant;
+    byCategorie.set(c, cur);
+  }
+  // Ventilation pro / perso (seulement pertinente en vue « Tout »)
+  let proCount = 0;
+  let persoCount = 0;
+  for (const t of tx) (usageOf(t, typeById) === "pro" ? (proCount++) : (persoCount++));
 
   const withMonth = new Set(tx.map((t) => (t.dateOperation || "").slice(0, 7)));
   const months = monthsSince("2024-01");
@@ -84,10 +106,16 @@ function Dashboard() {
   return (
     <div>
       <h1 className="page">Tableau de bord</h1>
-      <p className="sub">Reconstitution depuis janvier 2024</p>
+      <p className="sub">
+        Reconstitution depuis janvier 2024
+        {mode !== "tout" && ` · vue ${mode === "pro" ? "professionnelle" : "personnelle"}`}
+      </p>
 
       <div className="row" style={{ gap: 16, marginBottom: 24 }}>
         <Stat label="Transactions" value={String(tx.length)} />
+        {mode === "tout" && (
+          <Stat label="Pro / Perso" value={`${proCount} / ${persoCount}`} />
+        )}
         <Stat label="Sans justificatif" value={String(sansJustif.length)} tone="red" />
         <Stat label="Montant concerné" value={fmtAmount(montantConcerne)} tone="red" />
         <Stat label="À vérifier (OCR)" value={String(aVerifier.length)} tone="amber" />
@@ -104,7 +132,16 @@ function Dashboard() {
           rows={[...byYear.entries()].sort().map(([y, n]) => [y, String(n)])}
         />
         <MiniTable
-          title="Répartition par code validé"
+          title="Répartition par catégorie"
+          rows={[...byCategorie.entries()]
+            .sort((a, b) => b[1].count - a[1].count)
+            .map(([c, v]) => [c, `${v.count} · ${fmtAmount(v.montant)}`])}
+        />
+      </div>
+
+      <div style={{ marginBottom: 24 }}>
+        <MiniTable
+          title="Répartition par code comptable validé"
           rows={[...byCode.entries()]
             .sort((a, b) => b[1].count - a[1].count)
             .map(([c, v]) => [c, `${v.count} · ${fmtAmount(v.montant)}`])}

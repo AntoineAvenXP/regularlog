@@ -42,6 +42,9 @@ export type TransactionOrigin =
   | "bridge"
   | "saisie_manuelle";
 
+/** Usage d'une transaction : professionnel ou personnel (reconstitution). */
+export type Usage = "pro" | "perso";
+
 /** Transaction bancaire. */
 export interface Transaction {
   id: string;
@@ -56,7 +59,8 @@ export interface Transaction {
   fingerprint: string; // déduplication (§5)
   codeSuggere?: string | null; // suggéré ≠ validé (§6)
   codeValide?: string | null;
-  categorie?: string | null;
+  categorie?: string | null; // catégorie usuelle (nourriture, énergie…)
+  usage?: Usage | null; // override pro/perso ; si absent, déduit de l'entité
   justificatifStatus: JustificatifStatus;
   fluxInterne: boolean; // §7
   transactionMiroirId?: string | null;
@@ -129,6 +133,15 @@ export interface AccountingRule {
   code: string;
   libelleCode?: string | null;
   priorite?: number;
+  createdAt?: unknown;
+}
+
+/** Catégorie usuelle éditable (nourriture, énergie, transport…). */
+export interface Category {
+  id: string;
+  ownerUid: string;
+  nom: string;
+  ordre?: number;
   createdAt?: unknown;
 }
 

@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { ContourLines, DotGrid, Fan } from "@/components/Decor";
+import { UsageFilterProvider } from "@/lib/usageFilter";
+import UsageSwitch from "@/components/UsageSwitch";
 
 const NAV = [
   { href: "/", label: "Tableau de bord", Icon: LayoutGrid },
@@ -70,7 +72,12 @@ export default function Shell({ children }: { children: ReactNode }) {
           <DotGrid className="decor-dots" />
           <Fan className="decor-fan" />
         </div>
-        <div className="content-inner">{children}</div>
+        <UsageFilterProvider>
+          <div className="content-inner">
+            {["/", "/transactions", "/export"].includes(pathname) && <UsageSwitch />}
+            {children}
+          </div>
+        </UsageFilterProvider>
       </main>
     </div>
   );

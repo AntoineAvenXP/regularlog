@@ -2,18 +2,23 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { writeBatch, doc, collection } from "firebase/firestore";
+import { Briefcase, User } from "lucide-react";
 import Shell from "@/components/Shell";
 import { db } from "@/lib/firebase";
 import { COL, createOwned, listOwned, updateOwned } from "@/lib/db";
 import type {
   AccountingRule,
   BankAccount,
+  Category,
   Entity,
   JustificatifStatus,
   Transaction,
+  Usage,
 } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
 import { suggestCode, defaultMotifFromLibelle } from "@/lib/rules";
+import { entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
+import { useUsageFilter } from "@/lib/usageFilter";
 import { useAuth } from "@/lib/auth";
 
 const JUSTIF_STATUS: JustificatifStatus[] = [
@@ -33,10 +38,12 @@ export default function TransactionsPage() {
 
 function TxTable() {
   const { user } = useAuth();
+  const { mode } = useUsageFilter();
   const [entities, setEntities] = useState<Entity[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [tx, setTx] = useState<Transaction[]>([]);
   const [rules, setRules] = useState<AccountingRule[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
 
@@ -46,6 +53,7 @@ function TxTable() {
   const [fStatus, setFStatus] = useState("");
   const [fOrigine, setFOrigine] = useState("");
   const [fFlux, setFFlux] = useState("");
+  const [fCategorie, setFCategorie] = useState("");
   const [fMonth, setFMonth] = useState("");
   const [search, setSearch] = useState("");
 
@@ -55,37 +63,45 @@ function TxTable() {
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [e, a, t, r] = await Promise.all([
+      const [e, a, t, r, cat] = await Promise.all([
         listOwned<Entity>(COL.entities),
         listOwned<BankAccount>(COL.accounts),
         listOwned<Transaction>(COL.transactions),
         listOwned<AccountingRule>(COL.rules),
+        listOwned<Category>(COL.categories),
       ]);
       setEntities(e);
       setAccounts(a);
       setTx(t.sort((x, y) => (x.dateOperation < y.dateOperation ? 1 : -1)));
       setRules(r);
+      setCategories(
+        cat.sort((x, y) => (x.ordre ?? 0) - (y.ordre ?? 0) || x.nom.localeCompare(y.nom))
+      );
       setLoading(false);
     })();
   }, [user]);
 
   const entName = (id: string) => entities.find((e) => e.id === id)?.denomination ?? "—";
   const accName = (id: string) => accounts.find((a) => a.id === id)?.libelle ?? "—";
+  const typeById = useMemo(() => entityTypeMap(entities), [entities]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     return tx.filter((t) => {
+      if (!matchesUsage(t, mode, typeById)) return false;
       if (fEntity && t.entityId !== fEntity) return false;
       if (fAccount && t.bankAccountId !== fAccount) return false;
       if (fStatus && t.justificatifStatus !== fStatus) return false;
       if (fOrigine && t.origine !== fOrigine) return false;
       if (fFlux === "oui" && !t.fluxInterne) return false;
       if (fFlux === "non" && t.fluxInterne) return false;
+      if (fCategorie === "__none__" && (t.categorie ?? "") !== "") return false;
+      if (fCategorie && fCategorie !== "__none__" && t.categorie !== fCategorie) return false;
       if (fMonth && !(t.dateOperation || "").startsWith(fMonth)) return false;
       if (s && !(t.libelleBrut || "").toLowerCase().includes(s)) return false;
       return true;
     });
-  }, [tx, fEntity, fAccount, fStatus, fOrigine, fFlux, fMonth, search]);
+  }, [tx, mode, typeById, fEntity, fAccount, fStatus, fOrigine, fFlux, fCategorie, fMonth, search]);
 
   async function patch(id: string, data: Partial<Transaction>) {
     setTx((prev) => prev.map((t) => (t.id === id ? { ...t, ...data } : t)));
@@ -123,6 +139,25 @@ function TxTable() {
     for (const id of ids)
       await updateOwned(COL.transactions, id, { justificatifStatus: "perdu" });
     setSelected(new Set());
+  }
+
+  // Bascule pro/perso d'une ligne (override explicite).
+  async function toggleUsage(t: Transaction) {
+    const next: Usage = usageOf(t, typeById) === "pro" ? "perso" : "pro";
+    await patch(t.id, { usage: next });
+  }
+  async function applyBulkUsage(u: Usage) {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    setTx((prev) => prev.map((t) => (selected.has(t.id) ? { ...t, usage: u } : t)));
+    for (const id of ids) await updateOwned(COL.transactions, id, { usage: u });
+  }
+  async function applyBulkCategory(cat: string) {
+    if (selected.size === 0) return;
+    const value = cat || null;
+    const ids = [...selected];
+    setTx((prev) => prev.map((t) => (selected.has(t.id) ? { ...t, categorie: value } : t)));
+    for (const id of ids) await updateOwned(COL.transactions, id, { categorie: value });
   }
 
   // Applique le moteur de règles → remplit codeSuggere (jamais codeValide).
@@ -192,6 +227,7 @@ function TxTable() {
       "code_valide",
       "code_suggere",
       "categorie",
+      "usage",
       "statut_justificatif",
       "flux_interne",
       "origine",
@@ -215,6 +251,7 @@ function TxTable() {
           t.codeValide ?? "",
           t.codeSuggere ?? "",
           t.categorie ?? "",
+          usageOf(t, typeById),
           t.justificatifStatus,
           t.fluxInterne ? "oui" : "non",
           t.origine,
@@ -280,6 +317,13 @@ function TxTable() {
           <option value="oui">Flux interne</option>
           <option value="non">Hors flux interne</option>
         </select>
+        <select value={fCategorie} onChange={(e) => setFCategorie(e.target.value)}>
+          <option value="">Toute catégorie</option>
+          <option value="__none__">Sans catégorie</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.nom}>{c.nom}</option>
+          ))}
+        </select>
         <input
           type="month"
           value={fMonth}
@@ -316,6 +360,26 @@ function TxTable() {
             style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8 }}
           />
           <button className="btn" onClick={applyBulkCode}>Appliquer le code</button>
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              if (e.target.value) applyBulkCategory(e.target.value === "__clear__" ? "" : e.target.value);
+              e.target.value = "";
+            }}
+            style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8 }}
+          >
+            <option value="">Catégorie…</option>
+            <option value="__clear__">— aucune —</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.nom}>{c.nom}</option>
+            ))}
+          </select>
+          <button className="btn secondary" onClick={() => applyBulkUsage("pro")}>
+            <Briefcase size={14} /> Pro
+          </button>
+          <button className="btn secondary" onClick={() => applyBulkUsage("perso")}>
+            <User size={14} /> Perso
+          </button>
           <button className="btn danger" onClick={markLost}>Marquer « perdu »</button>
           <button className="btn secondary" onClick={() => setSelected(new Set())}>Désélectionner</button>
         </div>
@@ -336,6 +400,7 @@ function TxTable() {
               <th>Compte</th>
               <th>Libellé</th>
               <th>Montant</th>
+              <th>Pro/Perso</th>
               <th>Code</th>
               <th>Catégorie</th>
               <th>Justificatif</th>
@@ -363,6 +428,9 @@ function TxTable() {
                   {fmtAmount(t.montant)}
                 </td>
                 <td>
+                  <UsageToggle usage={usageOf(t, typeById)} onClick={() => toggleUsage(t)} />
+                </td>
+                <td>
                   <input
                     defaultValue={t.codeValide ?? ""}
                     placeholder={t.codeSuggere ? `suggéré : ${t.codeSuggere}` : ""}
@@ -375,13 +443,21 @@ function TxTable() {
                   />
                 </td>
                 <td>
-                  <input
-                    defaultValue={t.categorie ?? ""}
-                    onBlur={(e) => {
-                      const v = e.target.value.trim() || null;
+                  <select
+                    value={t.categorie ?? ""}
+                    onChange={(e) => {
+                      const v = e.target.value || null;
                       if (v !== (t.categorie ?? null)) patch(t.id, { categorie: v });
                     }}
-                  />
+                  >
+                    <option value="">—</option>
+                    {t.categorie && !categories.some((c) => c.nom === t.categorie) && (
+                      <option value={t.categorie}>{t.categorie}</option>
+                    )}
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.nom}>{c.nom}</option>
+                    ))}
+                  </select>
                 </td>
                 <td>
                   <select
@@ -405,5 +481,21 @@ function TxTable() {
         )}
       </div>
     </div>
+  );
+}
+
+/** Puce cliquable pro/perso : un clic bascule l'usage de la ligne. */
+function UsageToggle({ usage, onClick }: { usage: Usage; onClick: () => void }) {
+  const pro = usage === "pro";
+  return (
+    <button
+      onClick={onClick}
+      className="usage-pill"
+      data-usage={usage}
+      title="Cliquer pour basculer pro / perso"
+    >
+      {pro ? <Briefcase size={12} /> : <User size={12} />}
+      {pro ? "Pro" : "Perso"}
+    </button>
   );
 }

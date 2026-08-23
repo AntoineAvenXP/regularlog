@@ -466,6 +466,77 @@ table.grid select {
   color: var(--amber);
 }
 
+/* ---------- Bascule globale Pro / Perso ---------- */
+.usagebar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.usagebar-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.seg {
+  display: inline-flex;
+  background: #eef2ef;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+.seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.seg button:hover {
+  color: var(--green-dark);
+}
+.seg button.active {
+  background: #fff;
+  color: var(--green-dark);
+  box-shadow: 0 1px 3px rgba(12, 35, 40, 0.12);
+}
+
+/* puce pro/perso cliquable (table transactions) */
+.usage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  transition: filter 0.15s;
+}
+.usage-pill:hover {
+  filter: brightness(0.95);
+}
+.usage-pill[data-usage="pro"] {
+  background: #e6eef0;
+  color: #35707d;
+  border-color: #cfe0e4;
+}
+.usage-pill[data-usage="perso"] {
+  background: var(--accent-soft);
+  color: var(--green-dark);
+  border-color: #d8e8cd;
+}
+
 /* ---------- Zone de dépôt (imports relevés IA) ---------- */
 .dropzone {
   display: flex;

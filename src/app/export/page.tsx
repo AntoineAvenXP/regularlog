@@ -7,6 +7,8 @@ import { COL, listOwned } from "@/lib/db";
 import type { BankAccount, Entity, Justificatif, Transaction } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
 import { getFileBytes } from "@/lib/storage";
+import { entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
+import { useUsageFilter } from "@/lib/usageFilter";
 import { useAuth } from "@/lib/auth";
 
 export default function ExportPage() {
@@ -32,6 +34,7 @@ function today() {
 
 function ExportView() {
   const { user } = useAuth();
+  const { mode } = useUsageFilter();
   const [tx, setTx] = useState<Transaction[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
@@ -62,6 +65,7 @@ function ExportView() {
 
   const entName = (id: string) => entities.find((e) => e.id === id)?.denomination ?? "—";
   const accName = (id: string) => accounts.find((a) => a.id === id)?.libelle ?? "—";
+  const typeById = useMemo(() => entityTypeMap(entities), [entities]);
 
   const years = useMemo(() => {
     const s = new Set<string>();
@@ -75,22 +79,23 @@ function ExportView() {
   const filtered = useMemo(
     () =>
       tx.filter((t) => {
+        if (!matchesUsage(t, mode, typeById)) return false;
         if (fEntity && t.entityId !== fEntity) return false;
         if (fYear && !(t.dateOperation || "").startsWith(fYear)) return false;
         return true;
       }),
-    [tx, fEntity, fYear]
+    [tx, mode, typeById, fEntity, fYear]
   );
 
   function exportCsv() {
-    const cols = ["date_operation", "date_valeur", "entite", "compte", "libelle", "montant", "code_valide", "code_suggere", "categorie", "statut_justificatif", "flux_interne", "origine", "a_verifier", "notes"];
+    const cols = ["date_operation", "date_valeur", "entite", "compte", "libelle", "montant", "code_valide", "code_suggere", "categorie", "usage", "statut_justificatif", "flux_interne", "origine", "a_verifier", "notes"];
     const esc = (v: unknown) => {
       const s = v == null ? "" : String(v);
       return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = [cols.join(";")];
     for (const t of filtered) {
-      lines.push([t.dateOperation, t.dateValeur ?? "", entName(t.entityId), accName(t.bankAccountId), t.libelleBrut, String(t.montant).replace(".", ","), t.codeValide ?? "", t.codeSuggere ?? "", t.categorie ?? "", t.justificatifStatus, t.fluxInterne ? "oui" : "non", t.origine, t.aVerifier ? "oui" : "non", t.notes ?? ""].map(esc).join(";"));
+      lines.push([t.dateOperation, t.dateValeur ?? "", entName(t.entityId), accName(t.bankAccountId), t.libelleBrut, String(t.montant).replace(".", ","), t.codeValide ?? "", t.codeSuggere ?? "", t.categorie ?? "", usageOf(t, typeById), t.justificatifStatus, t.fluxInterne ? "oui" : "non", t.origine, t.aVerifier ? "oui" : "non", t.notes ?? ""].map(esc).join(";"));
     }
     download(new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" }), `regularlog-transactions-${today()}.csv`);
   }
@@ -139,7 +144,8 @@ function ExportView() {
       cur.montant += t.montant;
       byCode.set(c, cur);
     }
-    const scope = `${fEntity ? entName(fEntity) : "Toutes entités"} — ${fYear || "Tous exercices"}`;
+    const usageLabel = mode === "pro" ? "Pro" : mode === "perso" ? "Perso" : "Tout";
+    const scope = `${fEntity ? entName(fEntity) : "Toutes entités"} — ${fYear || "Tous exercices"} — ${usageLabel}`;
     const row = (cells: string[]) => `<tr>${cells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
     const money = (n: number) => n.toFixed(2).replace(".", ",") + " €";
     const esc = (s: string) => s.replace(/</g, "&lt;");
