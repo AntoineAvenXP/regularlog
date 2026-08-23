@@ -9,13 +9,26 @@ import {
 } from "./aiExtract";
 
 const CONCURRENCY = 4; // pages lues simultanément
-const PDF_SCALE = 2; // netteté suffisante pour l'OCR
-const IMG_MAX_DIM = 2200; // borne le poids d'une photo de relevé
-const JPEG_QUALITY = 0.82;
+const TARGET_PX = 1600; // plus grand côté d'une page rendue (lisible pour l'IA)
+const JPEG_QUALITY = 0.65;
+// Corps de requête max côté Vercel = 4,5 Mo. On garde chaque page bien en dessous
+// (base64 ≈ octets × 1,33). Cible : base64 ≤ ~3 Mo de caractères.
+const MAX_B64_LEN = 3_000_000;
 
 function stripDataUrl(dataUrl: string): string {
   const i = dataUrl.indexOf(",");
   return i >= 0 ? dataUrl.slice(i + 1) : dataUrl;
+}
+
+/** JPEG borné en taille : baisse la qualité tant que le base64 dépasse la cible. */
+function canvasToBoundedJpeg(canvas: HTMLCanvasElement): string {
+  let q = JPEG_QUALITY;
+  let out = stripDataUrl(canvas.toDataURL("image/jpeg", q));
+  while (out.length > MAX_B64_LEN && q > 0.3) {
+    q -= 0.15;
+    out = stripDataUrl(canvas.toDataURL("image/jpeg", q));
+  }
+  return out;
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -27,25 +40,25 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-/** Une image (photo/scan) → un seul « page » JPEG borné en dimension. */
+/** Une image (photo/scan) → un seul « page » JPEG borné en dimension et poids. */
 async function imageFileToJpeg(file: File): Promise<string> {
   const url = URL.createObjectURL(file);
   try {
     const img = await loadImage(url);
-    const scale = Math.min(1, IMG_MAX_DIM / Math.max(img.width, img.height));
+    const scale = Math.min(1, TARGET_PX / Math.max(img.width, img.height));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(img.width * scale));
     canvas.height = Math.max(1, Math.round(img.height * scale));
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("canvas indisponible");
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return stripDataUrl(canvas.toDataURL("image/jpeg", JPEG_QUALITY));
+    return canvasToBoundedJpeg(canvas);
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
-/** Un PDF → une image JPEG par page (rendu pdf.js). */
+/** Un PDF → une image JPEG par page (rendu pdf.js), bornée en taille. */
 async function pdfToJpegPages(file: File): Promise<string[]> {
   const pdfjsLib = await import("pdfjs-dist");
   pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -54,14 +67,17 @@ async function pdfToJpegPages(file: File): Promise<string[]> {
   const pages: string[] = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
-    const viewport = page.getViewport({ scale: PDF_SCALE });
+    // Échelle calculée pour que le plus grand côté ≈ TARGET_PX (pas de 300 dpi).
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(2.5, TARGET_PX / Math.max(base.width, base.height));
+    const viewport = page.getViewport({ scale: Math.max(1, scale) });
     const canvas = document.createElement("canvas");
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("canvas indisponible");
     await page.render({ canvasContext: ctx, viewport }).promise;
-    pages.push(stripDataUrl(canvas.toDataURL("image/jpeg", JPEG_QUALITY)));
+    pages.push(canvasToBoundedJpeg(canvas));
   }
   return pages;
 }
