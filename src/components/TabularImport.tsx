@@ -208,7 +208,7 @@ export default function TabularImport({
         const bId = bridgeWeak.get(weakKey(dr.dateOperation, dr.montant));
         if (bId) supersede.add(bId);
       }
-      const n = await writeImport({
+      const { count: n } = await writeImport({
         account,
         drafts,
         origine: kind === "excel" ? "import_excel" : "import_csv",

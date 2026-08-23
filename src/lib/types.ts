@@ -219,6 +219,7 @@ export interface Statement {
     usage: Usage | null;
   } | null;
   resolvedAccountId?: string | null;
+  importId?: string | null; // lot d'import lié → suppression en cascade des tx
   // Opérations extraites en attente d'import (vidées une fois importées).
   rows?: { date: string | null; libelle: string; montant: number | null }[];
   nbRows?: number;

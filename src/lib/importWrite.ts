@@ -77,10 +77,13 @@ async function storeSource(
 }
 
 /**
- * Écrit un import complet. Retourne le nombre de transactions écrites.
+ * Écrit un import complet. Retourne l'id du lot d'import (pour pouvoir tout
+ * supprimer plus tard) et le nombre de transactions écrites.
  * Ne fait AUCUNE déduplication : l'appelant filtre en amont (aperçu/revue).
  */
-export async function writeImport(params: WriteImportParams): Promise<number> {
+export async function writeImport(
+  params: WriteImportParams
+): Promise<{ importId: string; count: number }> {
   const {
     account,
     drafts,
@@ -149,5 +152,5 @@ export async function writeImport(params: WriteImportParams): Promise<number> {
     }
     await batch.commit();
   }
-  return drafts.length;
+  return { importId, count: drafts.length };
 }

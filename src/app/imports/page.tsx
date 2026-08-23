@@ -105,13 +105,8 @@ function Imports() {
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <BridgePanel entities={entities} accounts={accounts} onReload={reload} />
 
-        <StatementImport
-          entities={entities}
-          accounts={accounts}
-          existingFileHashes={existingFileHashes}
-          onImported={onImported}
-          onAccountsChanged={() => reload()}
-        />
+        <StatementImport />
+
 
         <TabularImport
           entities={entities}

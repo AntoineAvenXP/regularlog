@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   UploadCloud,
   FileText,
@@ -17,30 +17,10 @@ import {
   Landmark,
 } from "lucide-react";
 import { SectionHeader } from "@/components/PageHeader";
-import { COL, createOwned, deleteOwned, listOwned, updateOwned } from "@/lib/db";
-import {
-  buildStatementPdf,
-  extractFromImages,
-  toPageImages,
-} from "@/lib/statementExtract";
-import { fingerprint, parseDate } from "@/lib/parsing";
-import { hashFile, weakKey, writeImport, type TxDraft } from "@/lib/importWrite";
-import {
-  deleteFile,
-  getFileBytes,
-  isPdf,
-  statementPath,
-  uploadBlob,
-} from "@/lib/storage";
-import type {
-  BankAccount,
-  Entity,
-  Statement,
-  Transaction,
-  Usage,
-} from "@/lib/types";
+import { isPdf } from "@/lib/storage";
+import { useStatements } from "@/lib/statementsEngine";
+import type { BankAccount, Entity, Statement, Usage } from "@/lib/types";
 
-const MAX_FILES = 100;
 const CREATE = "__create__";
 
 const norm = (s: string): string =>
@@ -56,405 +36,70 @@ const iban4 = (iban?: string | null): string | null => {
   return digits.length >= 4 ? digits.slice(-4) : null;
 };
 
-function mimeOf(name: string): string {
-  if (isPdf(name)) return "application/pdf";
-  const ext = name.split(".").pop()?.toLowerCase();
-  if (ext === "png") return "image/png";
-  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
-  if (ext === "webp") return "image/webp";
-  if (ext === "gif") return "image/gif";
-  return "application/octet-stream";
-}
-
 /**
- * Import de relevés par l'IA — PERSISTANT et PROGRESSIF.
- * Chaque fichier déposé est conservé dans Storage + suivi dans Firestore
- * (collection statements) : il survit à la navigation. L'IA lit le relevé,
- * détecte le compte (banque/IBAN/titulaire + pro/perso) et les opérations,
- * qui sont importées au fil de l'eau dès que le compte est rattaché.
+ * Afficheur de l'import de relevés. Toute la logique (file, traitement,
+ * progression) vit dans StatementsProvider (monté dans le layout) → elle
+ * survit à la navigation. Ce composant lit et pilote ce moteur.
  */
-export default function StatementImport({
-  entities,
-  accounts,
-  existingFileHashes,
-  onImported,
-  onAccountsChanged,
-}: {
-  entities: Entity[];
-  accounts: BankAccount[];
-  existingFileHashes: Set<string>;
-  onImported: (n: number) => void;
-  onAccountsChanged: (newAccountId?: string) => void;
-}) {
-  const [statements, setStatements] = useState<Statement[]>([]);
-  const [progress, setProgress] = useState<Record<string, { done: number; total: number }>>({});
+export default function StatementImport() {
+  const {
+    statements,
+    progress,
+    accounts,
+    entities,
+    addFiles,
+    assignAccount,
+    createAccountFor,
+    retry,
+    remove,
+  } = useStatements();
+
   const [drag, setDrag] = useState(false);
   const [rejected, setRejected] = useState<string[]>([]);
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
   const [newEntityId, setNewEntityId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const accountsRef = useRef<BankAccount[]>(accounts);
-  accountsRef.current = accounts;
-
-  // Fichiers déposés cette session (pour ré-uploader en cas d'échec réseau).
-  const filesRef = useRef<Map<string, File>>(new Map());
-
-  const patch = useCallback(
-    (id: string, p: Partial<Statement>) =>
-      setStatements((prev) => prev.map((s) => (s.id === id ? { ...s, ...p } : s))),
-    []
-  );
-
-  const load = useCallback(async () => {
-    const list = await listOwned<Statement>(COL.statements);
-    list.sort((a, b) => (a.fileName < b.fileName ? -1 : 1));
-    setStatements(list);
-    return list;
-  }, []);
-
-  // ---- Rattachement automatique d'un compte détecté à un compte existant.
-  const autoMatch = useCallback((det: Statement["detected"]): string => {
-    if (!det) return "";
-    const acc = accountsRef.current;
-    const four = iban4(det.iban);
-    if (four) {
-      const byIban = acc.find((a) => iban4(a.ibanPartiel) === four);
-      if (byIban) return byIban.id;
-    }
-    if (det.banque) {
-      const nb = norm(det.banque);
-      if (nb) {
-        const byBank = acc.find((a) => {
-          const na = norm(a.banque);
-          return na && (na === nb || na.includes(nb) || nb.includes(na));
-        });
-        if (byBank) return byBank.id;
-      }
-    }
-    return "";
-  }, []);
-
-  // ---- Dédup fraîche + transactions Bridge à écraser, pour un compte donné.
-  async function buildDedup(accountId: string) {
-    const all = await listOwned<Transaction>(COL.transactions);
-    const existing = new Set<string>();
-    const bridgeWeak = new Map<string, string>();
-    for (const t of all) {
-      if (t.bankAccountId !== accountId) continue;
-      if (t.origine === "bridge") bridgeWeak.set(weakKey(t.dateOperation, t.montant), t.id);
-      else existing.add(t.fingerprint);
-    }
-    return { existing, bridgeWeak };
+  async function onFiles(files: FileList | File[]) {
+    const rej = await addFiles(files);
+    setRejected(rej);
   }
-
-  /** Écrit les transactions d'un relevé sur un compte (dédup + Bridge écrasé). */
-  const importResolved = useCallback(
-    async (st: Statement, accountId: string) => {
-      const acc = accountsRef.current.find((a) => a.id === accountId);
-      if (!acc || !st.rows) return;
-      const { existing, bridgeWeak } = await buildDedup(accountId);
-      const seen = new Set<string>();
-      const drafts: TxDraft[] = [];
-      const supersede = new Set<string>();
-      for (const r of st.rows) {
-        const d = parseDate(r.date);
-        const m = r.montant;
-        if (!d || m == null || !r.libelle?.trim()) continue;
-        const fp = fingerprint(accountId, d, m, r.libelle.trim());
-        if (existing.has(fp) || seen.has(fp)) continue;
-        seen.add(fp);
-        drafts.push({ dateOperation: d, dateValeur: null, libelle: r.libelle.trim(), montant: m, fp });
-        const bId = bridgeWeak.get(weakKey(d, m));
-        if (bId) supersede.add(bId);
-      }
-      const pdf = isPdf(st.fileName);
-      const n = drafts.length
-        ? await writeImport({
-            account: acc,
-            drafts,
-            origine: pdf ? "import_pdf" : "import_ocr",
-            aVerifier: true,
-            importKind: pdf ? "pdf" : "ocr",
-            fileName: st.fileName,
-            file: null, // déjà conservé via le relevé
-            fileHash: st.fileHash ?? null,
-            supersedeTxIds: [...supersede],
-            usage: st.detected?.usage ?? null,
-          })
-        : 0;
-      await updateOwned(COL.statements, st.id, {
-        status: "imported",
-        resolvedAccountId: accountId,
-        nbImported: n,
-        rows: [],
-      });
-      patch(st.id, {
-        status: "imported",
-        resolvedAccountId: accountId,
-        nbImported: n,
-        rows: [],
-      });
-      onImported(n);
-    },
-    [onImported, patch]
-  );
-
-  // ---- Traitement IA d'un relevé (lecture + auto-import si compte résolu).
-  const processStatement = useCallback(
-    async (st: Statement) => {
-      try {
-        // Fichier en mémoire (session) sinon rechargé depuis Storage (copie légère).
-        let file = filesRef.current.get(st.id);
-        if (!file) {
-          if (!st.storagePath) throw new Error("Fichier non disponible. Re-dépose le relevé.");
-          const bytes = await getFileBytes(st.storagePath);
-          file = new File([bytes], st.fileName, { type: mimeOf(st.fileName) });
-        }
-        // Découpe en images de page (côté client — aucune dépendance à l'upload).
-        const pages = await toPageImages(file);
-
-        // Persistance BEST-EFFORT : on stocke une copie PDF LÉGÈRE (reconstruite
-        // à partir des pages rendues) — bien plus petite que le scan brut, donc
-        // l'upload passe. Le traitement continue même si l'upload échoue.
-        if (!st.storagePath && pages.length) {
-          try {
-            const blob = await buildStatementPdf(pages);
-            const pdfName = st.fileName.replace(/\.[^.]+$/, "") + ".pdf";
-            const path = statementPath(st.id, pdfName);
-            await uploadBlob(path, blob, "application/pdf");
-            await updateOwned(COL.statements, st.id, { storagePath: path });
-            patch(st.id, { storagePath: path });
-          } catch {
-            /* persistance non bloquante */
-          }
-        }
-
-        // Lecture IA parallèle des pages (rapide, sans timeout).
-        const { account, rows } = await extractFromImages(pages, (done, total) =>
-          setProgress((p) => ({ ...p, [st.id]: { done, total } }))
-        );
-        setProgress((p) => {
-          const n = { ...p };
-          delete n[st.id];
-          return n;
-        });
-        const detected = account
-          ? {
-              banque: account.banque,
-              iban: account.iban,
-              titulaire: account.titulaire,
-              periode: account.periode,
-              usage: (account.usage ?? null) as Usage | null,
-            }
-          : null;
-        const cleanRows = rows.map((r) => ({
-          date: r.date ?? null,
-          libelle: r.libelle,
-          montant: r.montant,
-        }));
-        const nbRows = cleanRows.filter((r) => r.date && r.montant != null && r.libelle).length;
-
-        if (nbRows === 0) {
-          await updateOwned(COL.statements, st.id, { detected, rows: [], nbRows: 0, status: "empty" });
-          patch(st.id, { detected, rows: [], nbRows: 0, status: "empty" });
-          return;
-        }
-
-        const matched = autoMatch(detected);
-        await updateOwned(COL.statements, st.id, {
-          detected,
-          rows: cleanRows,
-          nbRows,
-          resolvedAccountId: matched || null,
-          status: matched ? "processing" : "ready",
-        });
-        const merged: Statement = {
-          ...st,
-          detected,
-          rows: cleanRows,
-          nbRows,
-          resolvedAccountId: matched || null,
-          status: matched ? "processing" : "ready",
-        };
-        patch(st.id, merged);
-
-        if (matched) await importResolved(merged, matched);
-      } catch (e) {
-        const msg = (e as Error).message;
-        await updateOwned(COL.statements, st.id, { status: "error", error: msg });
-        patch(st.id, { status: "error", error: msg });
-      }
-    },
-    [autoMatch, importResolved, patch]
-  );
-
-  // ---- File de traitement séquentielle (un relevé à la fois).
-  const queueRef = useRef<string[]>([]);
-  const runningRef = useRef(false);
-  const [working, setWorking] = useState(false);
-
-  const drain = useCallback(async () => {
-    if (runningRef.current) return;
-    runningRef.current = true;
-    setWorking(true);
-    try {
-      while (queueRef.current.length) {
-        const id = queueRef.current.shift()!;
-        // On relit le doc pour partir d'un état frais ; sinon on saute.
-        const st = (await listOwned<Statement>(COL.statements)).find((s) => s.id === id);
-        if (st) await processStatement(st);
-      }
-    } finally {
-      runningRef.current = false;
-      setWorking(false);
-    }
-  }, [processStatement]);
-
-  const enqueue = useCallback(
-    (ids: string[]) => {
-      queueRef.current.push(...ids);
-      void drain();
-    },
-    [drain]
-  );
-
-  // ---- Montage : charge la liste + reprend les traitements interrompus.
-  useEffect(() => {
-    (async () => {
-      const list = await load();
-      const toResume = list.filter((s) => s.status === "processing");
-      if (toResume.length) enqueue(toResume.map((s) => s.id));
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ---- Dépôt de fichiers.
-  const addFiles = useCallback(
-    async (files: FileList | File[]) => {
-      const arr = Array.from(files).filter(
-        (f) => isPdf(f.name) || f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)
-      );
-      if (arr.length === 0) return;
-      const room = MAX_FILES - statements.length;
-      const accepted = arr.slice(0, Math.max(0, room));
-
-      const seenHashes = new Set<string>([
-        ...existingFileHashes,
-        ...(statements.map((s) => s.fileHash).filter(Boolean) as string[]),
-      ]);
-      const rej: string[] = [];
-      const toProcess: string[] = [];
-
-      for (const file of accepted) {
-        let hash: string | undefined;
-        try {
-          hash = await hashFile(file);
-        } catch {
-          hash = undefined;
-        }
-        if (hash && seenHashes.has(hash)) {
-          rej.push(file.name);
-          continue;
-        }
-        if (hash) seenHashes.add(hash);
-        const id = await createOwned(COL.statements, {
-          fileName: file.name,
-          fileHash: hash ?? null,
-          storagePath: "",
-          status: "processing" as const,
-          detected: null,
-          resolvedAccountId: null,
-          rows: [],
-          nbRows: 0,
-          nbImported: 0,
-        });
-        const st: Statement = {
-          id,
-          ownerUid: "",
-          fileName: file.name,
-          fileHash: hash ?? null,
-          storagePath: "",
-          status: "processing",
-          detected: null,
-          resolvedAccountId: null,
-          rows: [],
-          nbRows: 0,
-          nbImported: 0,
-        };
-        setStatements((prev) => [st, ...prev]);
-        // Le fichier reste en mémoire ; il est traité tout de suite (aucun upload
-        // du scan brut). Une copie PDF légère sera stockée pendant le traitement.
-        filesRef.current.set(id, file);
-        toProcess.push(id);
-      }
-      setRejected(rej);
-      if (toProcess.length) enqueue(toProcess);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [statements, existingFileHashes, enqueue]
-  );
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setDrag(false);
-    if (e.dataTransfer.files?.length) void addFiles(e.dataTransfer.files);
+    if (e.dataTransfer.files?.length) void onFiles(e.dataTransfer.files);
   }
 
-  // ---- Rattachement manuel (état "ready") → import immédiat.
-  async function assignAccount(st: Statement, value: string) {
+  async function onAssign(st: Statement, value: string) {
     if (value === CREATE) {
       setCreatingFor(st.id);
       return;
     }
     setCreatingFor((c) => (c === st.id ? null : c));
-    if (value) await importResolved(st, value);
+    if (value) await assignAccount(st, value);
   }
 
-  async function createAccountFor(st: Statement) {
-    if (!newEntityId || !st.detected) return;
-    const det = st.detected;
-    const id = await createOwned(COL.accounts, {
-      entityId: newEntityId,
-      banque: det.banque || "Banque",
-      libelle: det.banque || det.titulaire || st.fileName,
-      ibanPartiel: iban4(det.iban),
-      source: "import" as const,
-      bridgeAccountId: null,
-    });
+  async function onCreate(st: Statement) {
+    if (!newEntityId) return;
+    await createAccountFor(st, newEntityId);
     setCreatingFor(null);
     setNewEntityId("");
-    onAccountsChanged(id);
-    accountsRef.current = [
-      ...accountsRef.current,
-      { id, ownerUid: "", entityId: newEntityId, banque: det.banque || "Banque", libelle: det.banque || st.fileName, ibanPartiel: iban4(det.iban), source: "import", bridgeAccountId: null },
-    ];
-    await importResolved({ ...st, detected: det }, id);
   }
 
-  async function retry(st: Statement) {
-    // On peut retraiter tant qu'on a le fichier (mémoire) ou sa copie stockée.
-    if (!st.storagePath && !filesRef.current.has(st.id)) {
-      const msg = "Fichier non disponible (page rechargée). Re-dépose le relevé.";
-      await updateOwned(COL.statements, st.id, { status: "error", error: msg });
-      patch(st.id, { status: "error", error: msg });
-      return;
-    }
-    await updateOwned(COL.statements, st.id, { status: "processing", error: null });
-    patch(st.id, { status: "processing", error: null });
-    enqueue([st.id]);
+  async function onRemove(st: Statement) {
+    const n = st.nbImported ?? 0;
+    const msg =
+      st.status === "imported" && n > 0
+        ? `Supprimer « ${st.fileName} » et ses ${n} transaction(s) importée(s) ?\n\nLes transactions correspondantes seront retirées de Regularlog. Cette action est irréversible.`
+        : `Retirer « ${st.fileName} » de la liste ?`;
+    if (window.confirm(msg)) await remove(st);
   }
 
-  async function remove(st: Statement) {
-    if (!window.confirm(`Retirer « ${st.fileName} » de la liste ? (les transactions déjà importées sont conservées)`)) return;
-    if (st.storagePath) await deleteFile(st.storagePath);
-    await deleteOwned(COL.statements, st.id);
-    setStatements((prev) => prev.filter((s) => s.id !== st.id));
-  }
+  const working = statements.some((s) => s.status === "processing");
 
-  // ---- Récap des comptes bancaires détectés.
   const detectedAccounts = useMemo(() => {
-    const map = new Map<string, { banque: string | null; iban4: string | null; usage: Usage | null; matched: boolean; count: number }>();
+    const map = new Map<string, { banque: string | null; iban4: string | null; usage: Usage | null; matched: boolean }>();
     for (const s of statements) {
       if (!s.detected) continue;
       const key = `${norm(s.detected.banque || "")}|${iban4(s.detected.iban) || ""}`;
@@ -463,9 +108,7 @@ export default function StatementImport({
         iban4: iban4(s.detected.iban),
         usage: s.detected.usage,
         matched: !!s.resolvedAccountId,
-        count: 0,
       };
-      cur.count++;
       if (s.resolvedAccountId) cur.matched = true;
       map.set(key, cur);
     }
@@ -483,10 +126,10 @@ export default function StatementImport({
       <p className="muted" style={{ marginTop: 0, marginBottom: 16, fontSize: 12.5 }}>
         Dépose tes relevés (PDF ou images). Ils sont conservés et lus par l&apos;IA :
         le compte est détecté (banque, IBAN, pro/perso) et les opérations remontent
-        automatiquement dans <strong>Transactions</strong> dès qu&apos;un compte est rattaché.
+        automatiquement dans <strong>Transactions</strong> dès qu&apos;un compte est
+        rattaché. La lecture continue même si tu changes de page.
       </p>
 
-      {/* Zone de dépôt */}
       <div
         className={`dropzone${drag ? " over" : ""}`}
         onClick={() => inputRef.current?.click()}
@@ -512,7 +155,7 @@ export default function StatementImport({
           accept=".pdf,image/*"
           style={{ display: "none" }}
           onChange={(e) => {
-            if (e.target.files?.length) void addFiles(e.target.files);
+            if (e.target.files?.length) void onFiles(e.target.files);
             e.target.value = "";
           }}
         />
@@ -524,7 +167,6 @@ export default function StatementImport({
         </p>
       )}
 
-      {/* Comptes bancaires détectés */}
       {detectedAccounts.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
@@ -545,7 +187,6 @@ export default function StatementImport({
         </div>
       )}
 
-      {/* Liste des relevés */}
       {statements.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
           {statements.map((st) => (
@@ -558,11 +199,11 @@ export default function StatementImport({
               accLabel={accLabel}
               creating={creatingFor === st.id}
               newEntityId={newEntityId}
-              onAssign={(v) => assignAccount(st, v)}
+              onAssign={(v) => onAssign(st, v)}
               onSetNewEntity={setNewEntityId}
-              onCreateAccount={() => createAccountFor(st)}
+              onCreateAccount={() => onCreate(st)}
               onRetry={() => retry(st)}
-              onRemove={() => remove(st)}
+              onRemove={() => onRemove(st)}
             />
           ))}
         </div>
@@ -685,7 +326,7 @@ function StatementRow({
           </button>
         )}
         {st.status !== "processing" && (
-          <button className="filecard-remove" onClick={onRemove} title="Retirer">
+          <button className="filecard-remove" onClick={onRemove} title="Supprimer">
             <Trash2 size={15} />
           </button>
         )}
