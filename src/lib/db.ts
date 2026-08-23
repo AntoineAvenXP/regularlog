@@ -24,6 +24,8 @@ export const COL = {
   codes: "accountingCodes",
   categories: "categories",
   imports: "imports",
+  dossiers: "dossiers",
+  documents: "generatedDocuments",
 } as const;
 
 export function currentUid(): string {

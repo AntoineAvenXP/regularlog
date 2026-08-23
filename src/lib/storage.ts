@@ -25,6 +25,17 @@ export function importPath(importId: string, filename: string): string {
   return `users/${uid()}/imports/${importId}/${safe}`;
 }
 
+/** Chemin Storage d'un document généré : users/{uid}/documents/{id}/{fichier}. */
+export function documentPath(docId: string, filename: string): string {
+  const safe = filename.replace(/[^\w.\-]/g, "_");
+  return `users/${uid()}/documents/${docId}/${safe}`;
+}
+
+/** Upload d'un Blob (PDF généré) au chemin donné. */
+export async function uploadBlob(path: string, blob: Blob, contentType: string): Promise<void> {
+  await uploadBytes(ref(storage, path), blob, { contentType });
+}
+
 export async function uploadFile(path: string, file: File): Promise<void> {
   await uploadBytes(ref(storage, path), file, { contentType: file.type || undefined });
 }

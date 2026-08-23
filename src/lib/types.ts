@@ -154,6 +154,42 @@ export interface AccountingCode {
   createdAt?: unknown;
 }
 
+/** Dossier de classement des documents générés (menu latéral). */
+export interface Dossier {
+  id: string;
+  ownerUid: string;
+  nom: string;
+  createdAt?: unknown;
+}
+
+/** Provenance des transactions d'un document généré (mention de bas de page). */
+export type DocCertification = "bridge" | "upload" | "manuel";
+
+/** Document PDF généré (liste de transactions filtrées), classable en dossier. */
+export interface GeneratedDocument {
+  id: string;
+  ownerUid: string;
+  titre: string;
+  reference: string; // ex. RL-20260823-4F2A
+  storagePath: string;
+  dossierId?: string | null;
+  certification: DocCertification;
+  groupBy: "categorie" | "compte" | "mois";
+  filtres: {
+    entityId?: string | null;
+    bankAccountId?: string | null;
+    categorie?: string | null;
+    periodeStart?: string | null;
+    periodeEnd?: string | null;
+    usage?: "tout" | "pro" | "perso";
+  };
+  nbTransactions: number;
+  totalDebit: number;
+  totalCredit: number;
+  integrity: string; // empreinte SHA-256 (courte) du contenu
+  createdAt?: unknown;
+}
+
 export type ImportKind = "csv" | "excel" | "pdf" | "ocr" | "bridge";
 
 /** Lot d'import : historique + annulation d'un import complet (§9). */

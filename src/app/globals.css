@@ -466,6 +466,144 @@ table.grid select {
   color: var(--amber);
 }
 
+/* ---------- Justificatifs : menu dossiers + documents ---------- */
+.doclayout {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 820px) {
+  .doclayout {
+    grid-template-columns: 1fr;
+  }
+}
+.dossier-menu {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: var(--shadow);
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dossier-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 4px 6px 8px;
+}
+.dossier-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #4a5a5e;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 13.5px;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+.dossier-item:hover {
+  background: var(--accent-soft);
+  color: var(--green-dark);
+}
+.dossier-item.active {
+  background: var(--green-bright);
+  color: #fff;
+}
+.dossier-item.active .dossier-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.dossier-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0;
+}
+.dossier-count {
+  margin-left: auto;
+  background: #eef2ef;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.dossier-del {
+  border: none;
+  background: transparent;
+  color: var(--muted-2);
+  padding: 2px;
+  display: inline-flex;
+}
+.dossier-item:hover .dossier-del {
+  color: var(--red);
+}
+
+.docrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.docrow-icon {
+  display: flex;
+  color: var(--green);
+  flex-shrink: 0;
+}
+.docrow-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.docrow-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 7px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.icon-btn:hover {
+  background: #f5f8f5;
+  border-color: var(--muted-2);
+}
+.icon-btn.danger:hover {
+  color: var(--red);
+  border-color: #f0c8c8;
+}
+
 /* ---------- Bascule globale Pro / Perso ---------- */
 .usagebar {
   display: flex;
