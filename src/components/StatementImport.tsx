@@ -18,7 +18,11 @@ import {
 } from "lucide-react";
 import { SectionHeader } from "@/components/PageHeader";
 import { COL, createOwned, deleteOwned, listOwned, updateOwned } from "@/lib/db";
-import { extractStatement } from "@/lib/statementExtract";
+import {
+  buildStatementPdf,
+  extractFromImages,
+  toPageImages,
+} from "@/lib/statementExtract";
 import { fingerprint, parseDate } from "@/lib/parsing";
 import { hashFile, weakKey, writeImport, type TxDraft } from "@/lib/importWrite";
 import {
@@ -26,7 +30,7 @@ import {
   getFileBytes,
   isPdf,
   statementPath,
-  uploadFileResumable,
+  uploadBlob,
 } from "@/lib/storage";
 import type {
   BankAccount,
@@ -200,14 +204,34 @@ export default function StatementImport({
   const processStatement = useCallback(
     async (st: Statement) => {
       try {
-        // Fichier en mémoire (session) sinon rechargé depuis Storage.
+        // Fichier en mémoire (session) sinon rechargé depuis Storage (copie légère).
         let file = filesRef.current.get(st.id);
         if (!file) {
+          if (!st.storagePath) throw new Error("Fichier non disponible. Re-dépose le relevé.");
           const bytes = await getFileBytes(st.storagePath);
           file = new File([bytes], st.fileName, { type: mimeOf(st.fileName) });
         }
-        // Découpe en pages + lecture IA parallèle (rapide, sans timeout).
-        const { account, rows } = await extractStatement(file, (done, total) =>
+        // Découpe en images de page (côté client — aucune dépendance à l'upload).
+        const pages = await toPageImages(file);
+
+        // Persistance BEST-EFFORT : on stocke une copie PDF LÉGÈRE (reconstruite
+        // à partir des pages rendues) — bien plus petite que le scan brut, donc
+        // l'upload passe. Le traitement continue même si l'upload échoue.
+        if (!st.storagePath && pages.length) {
+          try {
+            const blob = await buildStatementPdf(pages);
+            const pdfName = st.fileName.replace(/\.[^.]+$/, "") + ".pdf";
+            const path = statementPath(st.id, pdfName);
+            await uploadBlob(path, blob, "application/pdf");
+            await updateOwned(COL.statements, st.id, { storagePath: path });
+            patch(st.id, { storagePath: path });
+          } catch {
+            /* persistance non bloquante */
+          }
+        }
+
+        // Lecture IA parallèle des pages (rapide, sans timeout).
+        const { account, rows } = await extractFromImages(pages, (done, total) =>
           setProgress((p) => ({ ...p, [st.id]: { done, total } }))
         );
         setProgress((p) => {
@@ -359,9 +383,10 @@ export default function StatementImport({
           nbImported: 0,
         };
         setStatements((prev) => [st, ...prev]);
+        // Le fichier reste en mémoire ; il est traité tout de suite (aucun upload
+        // du scan brut). Une copie PDF légère sera stockée pendant le traitement.
         filesRef.current.set(id, file);
-        const ok = await doUpload(id, file);
-        if (ok) toProcess.push(id);
+        toProcess.push(id);
       }
       setRejected(rej);
       if (toProcess.length) enqueue(toProcess);
@@ -369,22 +394,6 @@ export default function StatementImport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [statements, existingFileHashes, enqueue]
   );
-
-  /** Upload résilient du relevé ; marque l'erreur sur la ligne en cas d'échec. */
-  async function doUpload(id: string, file: File): Promise<boolean> {
-    const path = statementPath(id, file.name);
-    try {
-      await uploadFileResumable(path, file);
-      await updateOwned(COL.statements, id, { storagePath: path });
-      patch(id, { storagePath: path });
-      return true;
-    } catch (e) {
-      const msg = "Échec de l'envoi du fichier : " + (e as Error).message;
-      await updateOwned(COL.statements, id, { status: "error", error: msg });
-      patch(id, { status: "error", error: msg });
-      return false;
-    }
-  }
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -424,20 +433,15 @@ export default function StatementImport({
   }
 
   async function retry(st: Statement) {
+    // On peut retraiter tant qu'on a le fichier (mémoire) ou sa copie stockée.
+    if (!st.storagePath && !filesRef.current.has(st.id)) {
+      const msg = "Fichier non disponible (page rechargée). Re-dépose le relevé.";
+      await updateOwned(COL.statements, st.id, { status: "error", error: msg });
+      patch(st.id, { status: "error", error: msg });
+      return;
+    }
     await updateOwned(COL.statements, st.id, { status: "processing", error: null });
     patch(st.id, { status: "processing", error: null });
-    // Si le fichier n'a jamais été envoyé (échec upload), on ré-uploade d'abord.
-    if (!st.storagePath) {
-      const file = filesRef.current.get(st.id);
-      if (!file) {
-        const msg = "Fichier non disponible (page rechargée). Re-dépose le relevé.";
-        await updateOwned(COL.statements, st.id, { status: "error", error: msg });
-        patch(st.id, { status: "error", error: msg });
-        return;
-      }
-      const ok = await doUpload(st.id, file);
-      if (!ok) return;
-    }
     enqueue([st.id]);
   }
 

@@ -67,10 +67,32 @@ async function pdfToJpegPages(file: File): Promise<string[]> {
 }
 
 /** Découpe le relevé en images de page (base64 JPEG sans préfixe). */
-async function toPageImages(file: File): Promise<string[]> {
+export async function toPageImages(file: File): Promise<string[]> {
   const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
   if (isPdf) return pdfToJpegPages(file);
   return [await imageFileToJpeg(file)];
+}
+
+/**
+ * Reconstruit un PDF LÉGER à partir des images de page déjà rendues. Sert de
+ * copie persistée : bien plus petite qu'un scan brut → upload fiable.
+ */
+export async function buildStatementPdf(images: string[]): Promise<Blob> {
+  const { jsPDF } = await import("jspdf");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let doc: any = null;
+  for (const b64 of images) {
+    const dataUrl = `data:image/jpeg;base64,${b64}`;
+    const img = await loadImage(dataUrl);
+    const w = img.width;
+    const h = img.height;
+    const orient = w > h ? "landscape" : "portrait";
+    if (!doc) doc = new jsPDF({ unit: "px", format: [w, h], orientation: orient });
+    else doc.addPage([w, h], orient);
+    doc.addImage(dataUrl, "JPEG", 0, 0, w, h);
+  }
+  if (!doc) return new Blob([], { type: "application/pdf" });
+  return doc.output("blob") as Blob;
 }
 
 /** Exécute des tâches avec une concurrence bornée, en préservant l'ordre. */
@@ -92,14 +114,13 @@ async function mapLimit<T, R>(
 }
 
 /**
- * Lit un relevé complet : découpe en pages → lecture IA parallèle → fusion.
+ * Lit des images de page déjà rendues : lecture IA parallèle → fusion.
  * `onProgress(done, total)` suit l'avancement des pages.
  */
-export async function extractStatement(
-  file: File,
+export async function extractFromImages(
+  pages: string[],
   onProgress?: (done: number, total: number) => void
 ): Promise<AiExtractResult> {
-  const pages = await toPageImages(file);
   const total = pages.length;
   let done = 0;
 
