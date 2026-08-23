@@ -9,7 +9,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { db } from "./firebase";
-import { COL, createOwned, currentUid, updateOwned } from "./db";
+import { COL, createOwned, currentUid, deleteOwned, updateOwned } from "./db";
 import { importPath, uploadFile } from "./storage";
 import type {
   BankAccount,
@@ -35,6 +35,28 @@ export interface WriteImportParams {
   importKind: ImportKind;
   fileName: string;
   file?: File | null;
+  fileHash?: string | null; // empreinte du fichier source (anti ré-upload)
+  supersedeTxIds?: string[]; // transactions Bridge à supprimer (l'upload prime)
+}
+
+/**
+ * Empreinte SHA-256 du contenu d'un fichier. Sert à rejeter le ré-upload exact
+ * d'un relevé déjà importé (avant tout appel IA).
+ */
+export async function hashFile(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Clé « faible » compte+date+montant (sans libellé) : identifie la même
+ * opération entre deux sources dont les libellés diffèrent (relevé vs Bridge).
+ */
+export function weakKey(dateOperation: string, montant: number): string {
+  return `${dateOperation}|${montant.toFixed(2)}`;
 }
 
 /** Conserve le fichier source dans Storage, renvoie son chemin (ou null). */
@@ -57,8 +79,26 @@ async function storeSource(
  * Ne fait AUCUNE déduplication : l'appelant filtre en amont (aperçu/revue).
  */
 export async function writeImport(params: WriteImportParams): Promise<number> {
-  const { account, drafts, origine, aVerifier, importKind, fileName, file } =
-    params;
+  const {
+    account,
+    drafts,
+    origine,
+    aVerifier,
+    importKind,
+    fileName,
+    file,
+    fileHash,
+    supersedeTxIds,
+  } = params;
+
+  // L'upload prime : on retire d'abord les transactions Bridge en conflit.
+  for (const id of supersedeTxIds ?? []) {
+    try {
+      await deleteOwned(COL.transactions, id);
+    } catch {
+      /* déjà supprimée : on ignore */
+    }
+  }
 
   const importId = await createOwned(COL.imports, {
     kind: importKind,
@@ -66,6 +106,7 @@ export async function writeImport(params: WriteImportParams): Promise<number> {
     bankAccountId: account.id,
     sourceStoragePath: null,
     nomFichier: fileName,
+    fileHash: fileHash ?? null,
     nbLignes: drafts.length,
   });
   const sourcePath = await storeSource(importId, file);

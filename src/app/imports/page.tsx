@@ -8,7 +8,8 @@ import BridgePanel from "@/components/BridgePanel";
 import StatementImport from "@/components/StatementImport";
 import TabularImport from "@/components/TabularImport";
 import { COL, listOwned } from "@/lib/db";
-import type { BankAccount, Entity, Transaction } from "@/lib/types";
+import { weakKey } from "@/lib/importWrite";
+import type { BankAccount, Entity, ImportBatch, Transaction } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
 
 export default function ImportsPage() {
@@ -24,21 +25,40 @@ function Imports() {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [fpByAccount, setFpByAccount] = useState<Record<string, Set<string>>>({});
+  const [bridgeByAccount, setBridgeByAccount] = useState<
+    Record<string, Map<string, string>>
+  >({});
+  const [existingFileHashes, setExistingFileHashes] = useState<Set<string>>(new Set());
   const [done, setDone] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    const [e, a, tx] = await Promise.all([
+    const [e, a, tx, imports] = await Promise.all([
       listOwned<Entity>(COL.entities),
       listOwned<BankAccount>(COL.accounts),
       listOwned<Transaction>(COL.transactions),
+      listOwned<ImportBatch>(COL.imports),
     ]);
     setEntities(e);
     setAccounts(a);
-    const map: Record<string, Set<string>> = {};
+    // Dédup ligne à ligne : empreintes des transactions NON-Bridge uniquement
+    // (les doublons Bridge sont écrasés par l'upload, cf. bridgeByAccount).
+    const fp: Record<string, Set<string>> = {};
+    const bridge: Record<string, Map<string, string>> = {};
     for (const t of tx) {
-      (map[t.bankAccountId] ??= new Set()).add(t.fingerprint);
+      if (t.origine === "bridge") {
+        (bridge[t.bankAccountId] ??= new Map()).set(
+          weakKey(t.dateOperation, t.montant),
+          t.id
+        );
+      } else {
+        (fp[t.bankAccountId] ??= new Set()).add(t.fingerprint);
+      }
     }
-    setFpByAccount(map);
+    setFpByAccount(fp);
+    setBridgeByAccount(bridge);
+    setExistingFileHashes(
+      new Set(imports.map((i) => i.fileHash).filter(Boolean) as string[])
+    );
   }, []);
 
   useEffect(() => {
@@ -89,6 +109,8 @@ function Imports() {
           entities={entities}
           accounts={accounts}
           fpByAccount={fpByAccount}
+          bridgeByAccount={bridgeByAccount}
+          existingFileHashes={existingFileHashes}
           onImported={onImported}
           onAccountsChanged={() => reload()}
         />
@@ -97,6 +119,8 @@ function Imports() {
           entities={entities}
           accounts={accounts}
           fpByAccount={fpByAccount}
+          bridgeByAccount={bridgeByAccount}
+          existingFileHashes={existingFileHashes}
           onImported={onImported}
         />
       </div>

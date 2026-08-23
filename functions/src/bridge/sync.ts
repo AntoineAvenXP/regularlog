@@ -38,16 +38,23 @@ async function doSync(): Promise<{ added: number; skipped: number }> {
   });
 
   // Empreintes + ids d'opération déjà présents (dédup contre imports manuels).
+  // `uploadWeak` = clé compte+date+montant des transactions NON-Bridge (relevés
+  // uploadés / saisies) : le relevé uploadé PRIME, Bridge ne recrée pas ces
+  // opérations même si le libellé diffère.
   const txSnap = await db
     .collection("transactions")
     .where("ownerUid", "==", OWNER_UID)
     .get();
   const existingFp = new Set<string>();
   const existingBankOp = new Set<string>();
+  const uploadWeak = new Set<string>();
   txSnap.forEach((d) => {
     const t = d.data();
     if (t.fingerprint) existingFp.add(t.fingerprint);
     if (t.bankOperationId) existingBankOp.add(String(t.bankOperationId));
+    if (t.origine !== "bridge" && t.dateOperation != null && t.montant != null) {
+      uploadWeak.add(`${t.bankAccountId}|${t.dateOperation}|${Number(t.montant).toFixed(2)}`);
+    }
   });
 
   let added = 0;
@@ -68,7 +75,10 @@ async function doSync(): Promise<{ added: number; skipped: number }> {
       }
       const bankOpId = String(bt.id);
       const fp = fingerprint(acc.id, date, montant, libelle);
-      if (existingBankOp.has(bankOpId) || existingFp.has(fp)) {
+      const weak = `${acc.id}|${date}|${montant.toFixed(2)}`;
+      // Skip si déjà vu (id/empreinte) OU si un relevé uploadé couvre déjà
+      // cette opération (compte+date+montant) : l'upload prime sur Bridge.
+      if (existingBankOp.has(bankOpId) || existingFp.has(fp) || uploadWeak.has(weak)) {
         skipped++;
         continue;
       }

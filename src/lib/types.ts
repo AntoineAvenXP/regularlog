@@ -165,6 +165,7 @@ export interface ImportBatch {
   bankAccountId?: string | null;
   sourceStoragePath?: string | null; // fichier source conservé (§12)
   nomFichier?: string | null;
+  fileHash?: string | null; // SHA-256 du fichier source : rejet des ré-uploads
   nbLignes: number;
   createdAt?: unknown;
 }

@@ -18,14 +18,14 @@ import { SectionHeader } from "@/components/PageHeader";
 import { COL, createOwned } from "@/lib/db";
 import { extractStatementAI, type AiDetectedAccount } from "@/lib/aiExtract";
 import { fingerprint, fmtAmount, parseDate } from "@/lib/parsing";
-import { writeImport, type TxDraft } from "@/lib/importWrite";
+import { hashFile, weakKey, writeImport, type TxDraft } from "@/lib/importWrite";
 import { isPdf } from "@/lib/storage";
 import type { BankAccount, Entity } from "@/lib/types";
 
 const MAX_FILES = 100;
 const CREATE = "__create__";
 
-type Status = "pending" | "processing" | "done" | "error";
+type Status = "pending" | "processing" | "done" | "error" | "duplicate";
 
 interface EditRow {
   date: string;
@@ -37,6 +37,7 @@ interface EditRow {
 interface QueueItem {
   id: string;
   file: File;
+  hash?: string;
   status: Status;
   error?: string;
   truncated?: boolean;
@@ -72,12 +73,16 @@ export default function StatementImport({
   entities,
   accounts,
   fpByAccount,
+  bridgeByAccount,
+  existingFileHashes,
   onImported,
   onAccountsChanged,
 }: {
   entities: Entity[];
   accounts: BankAccount[];
   fpByAccount: Record<string, Set<string>>;
+  bridgeByAccount: Record<string, Map<string, string>>;
+  existingFileHashes: Set<string>;
   onImported: (n: number) => void;
   onAccountsChanged: (newAccountId?: string) => void;
 }) {
@@ -149,27 +154,46 @@ export default function StatementImport({
   queueRef.current = queue;
 
   const addFiles = useCallback(
-    (files: FileList | File[]) => {
+    async (files: FileList | File[]) => {
       const arr = Array.from(files).filter(
         (f) => isPdf(f.name) || f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)
       );
       if (arr.length === 0) return;
       const room = MAX_FILES - queueRef.current.length;
       const accepted = arr.slice(0, Math.max(0, room));
-      const items: QueueItem[] = accepted.map((file) => ({
-        id: nextId(),
-        file,
-        status: "pending",
-        resolvedAccountId: "",
-        rows: [],
-        expanded: false,
-      }));
+
+      // Empreintes déjà connues (imports passés + fichiers déjà dans la file)
+      // → un relevé déjà fourni est rejeté avant tout appel IA.
+      const seenHashes = new Set<string>(
+        queueRef.current.map((q) => q.hash).filter(Boolean) as string[]
+      );
+      const items: QueueItem[] = [];
+      for (const file of accepted) {
+        let hash: string | undefined;
+        try {
+          hash = await hashFile(file);
+        } catch {
+          hash = undefined;
+        }
+        const dup = !!hash && (existingFileHashes.has(hash) || seenHashes.has(hash));
+        if (hash) seenHashes.add(hash);
+        items.push({
+          id: nextId(),
+          file,
+          hash,
+          status: dup ? "duplicate" : "pending",
+          resolvedAccountId: "",
+          rows: [],
+          expanded: false,
+        });
+      }
       setQueue((prev) => [...prev, ...items]);
-      // Traiter immédiatement les nouveaux si rien ne tourne déjà.
-      if (!running) runQueue(items.map((i) => i.id));
+      // Traiter (IA) uniquement les nouveaux non-doublons, si rien ne tourne déjà.
+      const toRun = items.filter((i) => i.status === "pending").map((i) => i.id);
+      if (!running && toRun.length) runQueue(toRun);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [running]
+    [running, existingFileHashes]
   );
 
   function onDrop(e: React.DragEvent) {
@@ -232,6 +256,7 @@ export default function StatementImport({
   }, [queue, accounts, fpByAccount]);
 
   const pending = queue.filter((q) => q.status === "pending" || q.status === "processing").length;
+  const duplicates = queue.filter((q) => q.status === "duplicate").length;
 
   async function validateAll() {
     setSaving(true);
@@ -242,8 +267,10 @@ export default function StatementImport({
         const acc = accounts.find((a) => a.id === it.resolvedAccountId);
         if (!acc) continue;
         const existing = fpByAccount[acc.id] ?? new Set<string>();
+        const bridgeWeak = bridgeByAccount[acc.id] ?? new Map<string, string>();
         const seen = new Set<string>();
         const drafts: TxDraft[] = [];
+        const supersede = new Set<string>();
         for (const r of it.rows) {
           if (!r.include) continue;
           const d = parseDate(r.date);
@@ -259,6 +286,10 @@ export default function StatementImport({
             montant: m,
             fp,
           });
+          // L'upload prime : une opération Bridge de même compte+date+montant
+          // sera supprimée au profit de cette ligne.
+          const bId = bridgeWeak.get(weakKey(d, m));
+          if (bId) supersede.add(bId);
         }
         if (drafts.length) {
           const pdf = isPdf(it.file.name);
@@ -270,6 +301,8 @@ export default function StatementImport({
             importKind: pdf ? "pdf" : "ocr",
             fileName: it.file.name,
             file: it.file,
+            fileHash: it.hash ?? null,
+            supersedeTxIds: [...supersede],
           });
         }
       }
@@ -358,6 +391,11 @@ export default function StatementImport({
                 <strong>{stats.unassigned}</strong> ligne(s) sans compte rattaché
               </span>
             )}
+            {duplicates > 0 && (
+              <span style={{ color: "var(--amber)" }}>
+                <strong>{duplicates}</strong> relevé(s) déjà importé(s), rejeté(s)
+              </span>
+            )}
             <button
               className="btn secondary"
               style={{ marginLeft: "auto" }}
@@ -421,6 +459,8 @@ function statusIcon(s: Status) {
     return <CheckCircle2 size={18} style={{ color: "var(--green)" }} />;
   if (s === "error")
     return <AlertCircle size={18} style={{ color: "var(--red)" }} />;
+  if (s === "duplicate")
+    return <AlertCircle size={18} style={{ color: "var(--amber)" }} />;
   return <Loader2 size={18} style={{ color: "var(--muted-2)" }} />;
 }
 
@@ -472,6 +512,11 @@ function FileCard({
           <div className="filecard-meta">
             {item.status === "processing" && "Lecture par l'IA…"}
             {item.status === "pending" && "En attente…"}
+            {item.status === "duplicate" && (
+              <span style={{ color: "var(--amber)" }}>
+                Relevé déjà importé — rejeté (aucune lecture IA).
+              </span>
+            )}
             {item.status === "error" && (
               <span style={{ color: "var(--red)" }}>{item.error}</span>
             )}
@@ -516,7 +561,7 @@ function FileCard({
             <span>{nbIncluded}</span>
           </button>
         )}
-        {(item.status === "error" || item.status === "done") && (
+        {(item.status === "error" || item.status === "done" || item.status === "duplicate") && (
           <button className="filecard-remove" onClick={onRemove} title="Retirer">
             <Trash2 size={15} />
           </button>

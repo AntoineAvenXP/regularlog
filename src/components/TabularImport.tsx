@@ -7,7 +7,7 @@ import { Table2, FileSpreadsheet } from "lucide-react";
 import { SectionHeader } from "@/components/PageHeader";
 import { COL, createOwned, listOwned, updateOwned } from "@/lib/db";
 import { fingerprint, fmtAmount, parseAmount, parseDate } from "@/lib/parsing";
-import { writeImport } from "@/lib/importWrite";
+import { hashFile, weakKey, writeImport } from "@/lib/importWrite";
 import type { BankAccount, ColumnMapping, Entity } from "@/lib/types";
 
 type AmountMode = "single" | "debitcredit";
@@ -33,17 +33,23 @@ export default function TabularImport({
   entities,
   accounts,
   fpByAccount,
+  bridgeByAccount,
+  existingFileHashes,
   onImported,
 }: {
   entities: Entity[];
   accounts: BankAccount[];
   fpByAccount: Record<string, Set<string>>;
+  bridgeByAccount: Record<string, Map<string, string>>;
+  existingFileHashes: Set<string>;
   onImported: (n: number) => void;
 }) {
   const [mappings, setMappings] = useState<ColumnMapping[]>([]);
   const [accountId, setAccountId] = useState("");
   const [fileName, setFileName] = useState("");
   const [currentFile, setCurrentFile] = useState<File | null>(null);
+  const [fileHash, setFileHash] = useState<string | null>(null);
+  const [rejected, setRejected] = useState(false);
   const [kind, setKind] = useState<"csv" | "excel">("csv");
 
   const [headers, setHeaders] = useState<string[]>([]);
@@ -97,6 +103,19 @@ export default function TabularImport({
     setHeaders([]);
     setRows([]);
     setOverrides({});
+    setRejected(false);
+    // Rejet d'un fichier déjà importé (même empreinte).
+    let hash: string | null = null;
+    try {
+      hash = await hashFile(f);
+    } catch {
+      hash = null;
+    }
+    setFileHash(hash);
+    if (hash && existingFileHashes.has(hash)) {
+      setRejected(true);
+      return;
+    }
     if (/\.csv$/i.test(f.name)) {
       setKind("csv");
       const text = await f.text();
@@ -182,6 +201,13 @@ export default function TabularImport({
           montant: p.montant as number,
           fp: p.fp,
         }));
+      // L'upload prime : opérations Bridge de même compte+date+montant à écraser.
+      const bridgeWeak = bridgeByAccount[account.id] ?? new Map<string, string>();
+      const supersede = new Set<string>();
+      for (const dr of drafts) {
+        const bId = bridgeWeak.get(weakKey(dr.dateOperation, dr.montant));
+        if (bId) supersede.add(bId);
+      }
       const n = await writeImport({
         account,
         drafts,
@@ -190,12 +216,15 @@ export default function TabularImport({
         importKind: kind,
         fileName,
         file: currentFile,
+        fileHash,
+        supersedeTxIds: [...supersede],
       });
       setHeaders([]);
       setRows([]);
       setOverrides({});
       setFileName("");
       setCurrentFile(null);
+      setFileHash(null);
       onImported(n);
     } finally {
       setBusy(false);
@@ -245,6 +274,14 @@ export default function TabularImport({
         <p className="muted" style={{ marginTop: 8 }}>
           Crée d&apos;abord une entité et un compte dans <strong>Paramètres</strong>.
         </p>
+      )}
+      {rejected && (
+        <div
+          className="empty"
+          style={{ marginTop: 12, color: "var(--amber)", borderColor: "var(--amber)" }}
+        >
+          Ce fichier a déjà été importé — import rejeté. {fileName}
+        </div>
       )}
 
       {headers.length > 0 && account && (
