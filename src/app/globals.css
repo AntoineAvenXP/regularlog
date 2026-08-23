@@ -720,6 +720,77 @@ table.grid select {
   text-decoration: underline;
 }
 
+/* ---------- Modal de confirmation ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(12, 35, 40, 0.45);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: rl-fade 0.12s ease-out;
+}
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(12, 35, 40, 0.28);
+  width: 100%;
+  max-width: 440px;
+  padding: 22px 24px 20px;
+  animation: rl-pop 0.14s ease-out;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 10px;
+}
+.modal-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--green);
+  flex-shrink: 0;
+}
+.modal-icon.danger {
+  background: #fdeaea;
+  color: var(--red);
+}
+.modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text);
+}
+.modal-msg {
+  margin: 0 0 20px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-line;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+@keyframes rl-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes rl-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 /* Comptes détectés dans un relevé (multi-comptes) */
 .stmt-parts {
   display: flex;

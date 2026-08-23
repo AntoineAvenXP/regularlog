@@ -17,6 +17,7 @@ import {
   Landmark,
 } from "lucide-react";
 import { SectionHeader } from "@/components/PageHeader";
+import ConfirmModal from "@/components/ConfirmModal";
 import { isPdf } from "@/lib/storage";
 import { useStatements } from "@/lib/statementsEngine";
 import type { BankAccount, Entity, Statement, StatementPart, Usage } from "@/lib/types";
@@ -59,6 +60,7 @@ export default function StatementImport() {
   // Édition de création de compte, clé = `${statementId}::${partKey}`.
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
   const [newEntityId, setNewEntityId] = useState("");
+  const [toDelete, setToDelete] = useState<Statement | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function onFiles(files: FileList | File[]) {
@@ -88,14 +90,9 @@ export default function StatementImport() {
     setNewEntityId("");
   }
 
-  async function onRemove(st: Statement) {
-    const n = (st.parts ?? []).reduce((s, p) => s + (p.nbImported ?? 0), 0);
-    const msg =
-      n > 0
-        ? `Supprimer « ${st.fileName} » et ses ${n} transaction(s) importée(s) ?\n\nLes transactions correspondantes seront retirées de Regularlog. Cette action est irréversible.`
-        : `Retirer « ${st.fileName} » de la liste ?`;
-    if (window.confirm(msg)) await remove(st);
-  }
+  const delCount = toDelete
+    ? (toDelete.parts ?? []).reduce((s, p) => s + (p.nbImported ?? 0), 0)
+    : 0;
 
   const working = statements.some((s) => s.status === "processing");
 
@@ -207,11 +204,29 @@ export default function StatementImport() {
               onSetNewEntity={setNewEntityId}
               onCreateAccount={(part) => onCreate(st, part)}
               onRetry={() => retry(st)}
-              onRemove={() => onRemove(st)}
+              onRemove={() => setToDelete(st)}
             />
           ))}
         </div>
       )}
+
+      <ConfirmModal
+        open={!!toDelete}
+        title="Supprimer ce relevé ?"
+        message={
+          toDelete
+            ? delCount > 0
+              ? `« ${toDelete.fileName} » et ses ${delCount} transaction(s) importée(s) seront supprimés de Regularlog.\nCette action est irréversible.`
+              : `« ${toDelete.fileName} » sera retiré de la liste.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        onConfirm={async () => {
+          if (toDelete) await remove(toDelete);
+          setToDelete(null);
+        }}
+        onCancel={() => setToDelete(null)}
+      />
     </section>
   );
 }
