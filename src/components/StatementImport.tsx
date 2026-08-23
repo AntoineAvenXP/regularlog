@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   UploadCloud,
   FileText,
@@ -8,44 +8,36 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  ChevronDown,
-  ChevronRight,
-  Plus,
   Trash2,
   Sparkles,
+  Plus,
+  RotateCw,
+  Briefcase,
+  User,
+  Landmark,
 } from "lucide-react";
 import { SectionHeader } from "@/components/PageHeader";
-import { COL, createOwned } from "@/lib/db";
-import { extractStatementAI, type AiDetectedAccount } from "@/lib/aiExtract";
-import { fingerprint, fmtAmount, parseDate } from "@/lib/parsing";
+import { COL, createOwned, deleteOwned, listOwned, updateOwned } from "@/lib/db";
+import { extractStatementAI } from "@/lib/aiExtract";
+import { fingerprint, parseDate } from "@/lib/parsing";
 import { hashFile, weakKey, writeImport, type TxDraft } from "@/lib/importWrite";
-import { isPdf } from "@/lib/storage";
-import type { BankAccount, Entity } from "@/lib/types";
+import {
+  deleteFile,
+  getFileBytes,
+  isPdf,
+  statementPath,
+  uploadFile,
+} from "@/lib/storage";
+import type {
+  BankAccount,
+  Entity,
+  Statement,
+  Transaction,
+  Usage,
+} from "@/lib/types";
 
 const MAX_FILES = 100;
 const CREATE = "__create__";
-
-type Status = "pending" | "processing" | "done" | "error" | "duplicate";
-
-interface EditRow {
-  date: string;
-  libelle: string;
-  montant: string;
-  include: boolean;
-}
-
-interface QueueItem {
-  id: string;
-  file: File;
-  hash?: string;
-  status: Status;
-  error?: string;
-  truncated?: boolean;
-  detected?: AiDetectedAccount | null;
-  resolvedAccountId: string; // "" tant que non rattaché
-  rows: EditRow[];
-  expanded: boolean;
-}
 
 const norm = (s: string): string =>
   (s ?? "")
@@ -60,114 +52,263 @@ const iban4 = (iban?: string | null): string | null => {
   return digits.length >= 4 ? digits.slice(-4) : null;
 };
 
-let seq = 0;
-const nextId = () => `q${++seq}_${performance.now().toFixed(0)}`;
+function mimeOf(name: string): string {
+  if (isPdf(name)) return "application/pdf";
+  const ext = name.split(".").pop()?.toLowerCase();
+  if (ext === "png") return "image/png";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  return "application/octet-stream";
+}
 
 /**
- * Import de relevés par l'IA — jusqu'à 100 fichiers d'un coup (PDF / images).
- * Les fichiers sont traités les uns après les autres : Claude détecte le compte
- * (banque / IBAN / titulaire) et extrait les opérations, qu'on rattache
- * automatiquement au bon compte Regularlog puis qu'on valide après relecture.
+ * Import de relevés par l'IA — PERSISTANT et PROGRESSIF.
+ * Chaque fichier déposé est conservé dans Storage + suivi dans Firestore
+ * (collection statements) : il survit à la navigation. L'IA lit le relevé,
+ * détecte le compte (banque/IBAN/titulaire + pro/perso) et les opérations,
+ * qui sont importées au fil de l'eau dès que le compte est rattaché.
  */
 export default function StatementImport({
   entities,
   accounts,
-  fpByAccount,
-  bridgeByAccount,
   existingFileHashes,
   onImported,
   onAccountsChanged,
 }: {
   entities: Entity[];
   accounts: BankAccount[];
-  fpByAccount: Record<string, Set<string>>;
-  bridgeByAccount: Record<string, Map<string, string>>;
   existingFileHashes: Set<string>;
   onImported: (n: number) => void;
   onAccountsChanged: (newAccountId?: string) => void;
 }) {
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [running, setRunning] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [statements, setStatements] = useState<Statement[]>([]);
   const [drag, setDrag] = useState(false);
+  const [rejected, setRejected] = useState<string[]>([]);
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
   const [newEntityId, setNewEntityId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const patch = useCallback((id: string, p: Partial<QueueItem>) => {
-    setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, ...p } : q)));
-  }, []);
+  const accountsRef = useRef<BankAccount[]>(accounts);
+  accountsRef.current = accounts;
 
-  /** Rattache automatiquement un compte détecté à un compte existant. */
-  const autoMatch = useCallback(
-    (det: AiDetectedAccount | null): string => {
-      if (!det) return "";
-      const four = iban4(det.iban);
-      if (four) {
-        const byIban = accounts.find((a) => iban4(a.ibanPartiel) === four);
-        if (byIban) return byIban.id;
-      }
-      if (det.banque) {
-        const nb = norm(det.banque);
-        if (nb) {
-          const byBank = accounts.find((a) => {
-            const na = norm(a.banque);
-            return na && (na === nb || na.includes(nb) || nb.includes(na));
-          });
-          if (byBank) return byBank.id;
-        }
-      }
-      return "";
-    },
-    [accounts]
+  const patch = useCallback(
+    (id: string, p: Partial<Statement>) =>
+      setStatements((prev) => prev.map((s) => (s.id === id ? { ...s, ...p } : s))),
+    []
   );
 
-  async function runQueue(ids: string[]) {
-    setRunning(true);
-    for (const id of ids) {
-      const item = queueRef.current.find((q) => q.id === id);
-      if (!item) continue;
-      patch(id, { status: "processing" });
-      try {
-        const { account, rows, truncated } = await extractStatementAI(item.file);
-        patch(id, {
-          status: "done",
-          detected: account,
-          truncated,
-          resolvedAccountId: autoMatch(account),
-          rows: rows.map((r) => ({
-            date: r.date ?? "",
-            libelle: r.libelle,
-            montant: r.montant != null ? String(r.montant) : "",
-            include: !!(r.date && r.montant != null && r.libelle),
-          })),
+  const load = useCallback(async () => {
+    const list = await listOwned<Statement>(COL.statements);
+    list.sort((a, b) => (a.fileName < b.fileName ? -1 : 1));
+    setStatements(list);
+    return list;
+  }, []);
+
+  // ---- Rattachement automatique d'un compte détecté à un compte existant.
+  const autoMatch = useCallback((det: Statement["detected"]): string => {
+    if (!det) return "";
+    const acc = accountsRef.current;
+    const four = iban4(det.iban);
+    if (four) {
+      const byIban = acc.find((a) => iban4(a.ibanPartiel) === four);
+      if (byIban) return byIban.id;
+    }
+    if (det.banque) {
+      const nb = norm(det.banque);
+      if (nb) {
+        const byBank = acc.find((a) => {
+          const na = norm(a.banque);
+          return na && (na === nb || na.includes(nb) || nb.includes(na));
         });
-      } catch (e) {
-        patch(id, { status: "error", error: (e as Error).message });
+        if (byBank) return byBank.id;
       }
     }
-    setRunning(false);
+    return "";
+  }, []);
+
+  // ---- Dédup fraîche + transactions Bridge à écraser, pour un compte donné.
+  async function buildDedup(accountId: string) {
+    const all = await listOwned<Transaction>(COL.transactions);
+    const existing = new Set<string>();
+    const bridgeWeak = new Map<string, string>();
+    for (const t of all) {
+      if (t.bankAccountId !== accountId) continue;
+      if (t.origine === "bridge") bridgeWeak.set(weakKey(t.dateOperation, t.montant), t.id);
+      else existing.add(t.fingerprint);
+    }
+    return { existing, bridgeWeak };
   }
 
-  // Miroir synchrone de la file pour lire l'état frais dans runQueue.
-  const queueRef = useRef<QueueItem[]>([]);
-  queueRef.current = queue;
+  /** Écrit les transactions d'un relevé sur un compte (dédup + Bridge écrasé). */
+  const importResolved = useCallback(
+    async (st: Statement, accountId: string) => {
+      const acc = accountsRef.current.find((a) => a.id === accountId);
+      if (!acc || !st.rows) return;
+      const { existing, bridgeWeak } = await buildDedup(accountId);
+      const seen = new Set<string>();
+      const drafts: TxDraft[] = [];
+      const supersede = new Set<string>();
+      for (const r of st.rows) {
+        const d = parseDate(r.date);
+        const m = r.montant;
+        if (!d || m == null || !r.libelle?.trim()) continue;
+        const fp = fingerprint(accountId, d, m, r.libelle.trim());
+        if (existing.has(fp) || seen.has(fp)) continue;
+        seen.add(fp);
+        drafts.push({ dateOperation: d, dateValeur: null, libelle: r.libelle.trim(), montant: m, fp });
+        const bId = bridgeWeak.get(weakKey(d, m));
+        if (bId) supersede.add(bId);
+      }
+      const pdf = isPdf(st.fileName);
+      const n = drafts.length
+        ? await writeImport({
+            account: acc,
+            drafts,
+            origine: pdf ? "import_pdf" : "import_ocr",
+            aVerifier: true,
+            importKind: pdf ? "pdf" : "ocr",
+            fileName: st.fileName,
+            file: null, // déjà conservé via le relevé
+            fileHash: st.fileHash ?? null,
+            supersedeTxIds: [...supersede],
+            usage: st.detected?.usage ?? null,
+          })
+        : 0;
+      await updateOwned(COL.statements, st.id, {
+        status: "imported",
+        resolvedAccountId: accountId,
+        nbImported: n,
+        rows: [],
+      });
+      patch(st.id, {
+        status: "imported",
+        resolvedAccountId: accountId,
+        nbImported: n,
+        rows: [],
+      });
+      onImported(n);
+    },
+    [onImported, patch]
+  );
 
+  // ---- Traitement IA d'un relevé (lecture + auto-import si compte résolu).
+  const processStatement = useCallback(
+    async (st: Statement, providedFile?: File) => {
+      try {
+        let file = providedFile;
+        if (!file) {
+          const bytes = await getFileBytes(st.storagePath);
+          file = new File([bytes], st.fileName, { type: mimeOf(st.fileName) });
+        }
+        const { account, rows } = await extractStatementAI(file);
+        const detected = account
+          ? {
+              banque: account.banque,
+              iban: account.iban,
+              titulaire: account.titulaire,
+              periode: account.periode,
+              usage: (account.usage ?? null) as Usage | null,
+            }
+          : null;
+        const cleanRows = rows.map((r) => ({
+          date: r.date ?? null,
+          libelle: r.libelle,
+          montant: r.montant,
+        }));
+        const nbRows = cleanRows.filter((r) => r.date && r.montant != null && r.libelle).length;
+
+        if (nbRows === 0) {
+          await updateOwned(COL.statements, st.id, { detected, rows: [], nbRows: 0, status: "empty" });
+          patch(st.id, { detected, rows: [], nbRows: 0, status: "empty" });
+          return;
+        }
+
+        const matched = autoMatch(detected);
+        await updateOwned(COL.statements, st.id, {
+          detected,
+          rows: cleanRows,
+          nbRows,
+          resolvedAccountId: matched || null,
+          status: matched ? "processing" : "ready",
+        });
+        const merged: Statement = {
+          ...st,
+          detected,
+          rows: cleanRows,
+          nbRows,
+          resolvedAccountId: matched || null,
+          status: matched ? "processing" : "ready",
+        };
+        patch(st.id, merged);
+
+        if (matched) await importResolved(merged, matched);
+      } catch (e) {
+        const msg = (e as Error).message;
+        await updateOwned(COL.statements, st.id, { status: "error", error: msg });
+        patch(st.id, { status: "error", error: msg });
+      }
+    },
+    [autoMatch, importResolved, patch]
+  );
+
+  // ---- File de traitement séquentielle (un relevé à la fois).
+  const queueRef = useRef<{ id: string; file?: File }[]>([]);
+  const runningRef = useRef(false);
+  const [working, setWorking] = useState(false);
+
+  const drain = useCallback(async () => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    setWorking(true);
+    try {
+      while (queueRef.current.length) {
+        const next = queueRef.current.shift()!;
+        const st = (await listOwned<Statement>(COL.statements)).find((s) => s.id === next.id);
+        // On relit le doc pour partir d'un état frais ; sinon on saute.
+        if (st) await processStatement(st, next.file);
+      }
+    } finally {
+      runningRef.current = false;
+      setWorking(false);
+    }
+  }, [processStatement]);
+
+  const enqueue = useCallback(
+    (items: { id: string; file?: File }[]) => {
+      queueRef.current.push(...items);
+      void drain();
+    },
+    [drain]
+  );
+
+  // ---- Montage : charge la liste + reprend les traitements interrompus.
+  useEffect(() => {
+    (async () => {
+      const list = await load();
+      const toResume = list.filter((s) => s.status === "processing");
+      if (toResume.length) enqueue(toResume.map((s) => ({ id: s.id })));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---- Dépôt de fichiers.
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
       const arr = Array.from(files).filter(
         (f) => isPdf(f.name) || f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)
       );
       if (arr.length === 0) return;
-      const room = MAX_FILES - queueRef.current.length;
+      const room = MAX_FILES - statements.length;
       const accepted = arr.slice(0, Math.max(0, room));
 
-      // Empreintes déjà connues (imports passés + fichiers déjà dans la file)
-      // → un relevé déjà fourni est rejeté avant tout appel IA.
-      const seenHashes = new Set<string>(
-        queueRef.current.map((q) => q.hash).filter(Boolean) as string[]
-      );
-      const items: QueueItem[] = [];
+      const seenHashes = new Set<string>([
+        ...existingFileHashes,
+        ...(statements.map((s) => s.fileHash).filter(Boolean) as string[]),
+      ]);
+      const rej: string[] = [];
+      const toProcess: { id: string; file: File }[] = [];
+
       for (const file of accepted) {
         let hash: string | undefined;
         try {
@@ -175,165 +316,132 @@ export default function StatementImport({
         } catch {
           hash = undefined;
         }
-        const dup = !!hash && (existingFileHashes.has(hash) || seenHashes.has(hash));
+        if (hash && seenHashes.has(hash)) {
+          rej.push(file.name);
+          continue;
+        }
         if (hash) seenHashes.add(hash);
-        items.push({
-          id: nextId(),
-          file,
-          hash,
-          status: dup ? "duplicate" : "pending",
-          resolvedAccountId: "",
+        const id = await createOwned(COL.statements, {
+          fileName: file.name,
+          fileHash: hash ?? null,
+          storagePath: "",
+          status: "processing" as const,
+          detected: null,
+          resolvedAccountId: null,
           rows: [],
-          expanded: false,
+          nbRows: 0,
+          nbImported: 0,
         });
+        const path = statementPath(id, file.name);
+        await uploadFile(path, file);
+        await updateOwned(COL.statements, id, { storagePath: path });
+        const st: Statement = {
+          id,
+          ownerUid: "",
+          fileName: file.name,
+          fileHash: hash ?? null,
+          storagePath: path,
+          status: "processing",
+          detected: null,
+          resolvedAccountId: null,
+          rows: [],
+          nbRows: 0,
+          nbImported: 0,
+        };
+        setStatements((prev) => [st, ...prev]);
+        toProcess.push({ id, file });
       }
-      setQueue((prev) => [...prev, ...items]);
-      // Traiter (IA) uniquement les nouveaux non-doublons, si rien ne tourne déjà.
-      const toRun = items.filter((i) => i.status === "pending").map((i) => i.id);
-      if (!running && toRun.length) runQueue(toRun);
+      setRejected(rej);
+      if (toProcess.length) enqueue(toProcess);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [running, existingFileHashes]
+    [statements, existingFileHashes, enqueue]
   );
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setDrag(false);
-    if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+    if (e.dataTransfer.files?.length) void addFiles(e.dataTransfer.files);
   }
 
-  async function createAccountFor(item: QueueItem) {
-    if (!newEntityId || !item.detected) return;
-    const det = item.detected;
+  // ---- Rattachement manuel (état "ready") → import immédiat.
+  async function assignAccount(st: Statement, value: string) {
+    if (value === CREATE) {
+      setCreatingFor(st.id);
+      return;
+    }
+    setCreatingFor((c) => (c === st.id ? null : c));
+    if (value) await importResolved(st, value);
+  }
+
+  async function createAccountFor(st: Statement) {
+    if (!newEntityId || !st.detected) return;
+    const det = st.detected;
     const id = await createOwned(COL.accounts, {
       entityId: newEntityId,
       banque: det.banque || "Banque",
-      libelle: det.banque || det.titulaire || item.file.name,
+      libelle: det.banque || det.titulaire || st.fileName,
       ibanPartiel: iban4(det.iban),
       source: "import" as const,
       bridgeAccountId: null,
     });
-    patch(item.id, { resolvedAccountId: id });
     setCreatingFor(null);
     setNewEntityId("");
     onAccountsChanged(id);
+    accountsRef.current = [
+      ...accountsRef.current,
+      { id, ownerUid: "", entityId: newEntityId, banque: det.banque || "Banque", libelle: det.banque || st.fileName, ibanPartiel: iban4(det.iban), source: "import", bridgeAccountId: null },
+    ];
+    await importResolved({ ...st, detected: det }, id);
   }
 
-  // ---- Comptages / dédup live
-  const stats = useMemo(() => {
-    let ready = 0;
-    let lines = 0;
-    let dups = 0;
-    let unassigned = 0;
-    for (const it of queue) {
-      if (it.status !== "done") continue;
-      const acc = accounts.find((a) => a.id === it.resolvedAccountId);
-      const existing = acc ? fpByAccount[acc.id] ?? new Set<string>() : null;
-      const seen = new Set<string>();
-      let itemLines = 0;
-      for (const r of it.rows) {
-        if (!r.include) continue;
-        const d = parseDate(r.date);
-        const m = Number(String(r.montant).replace(/\s/g, "").replace(",", "."));
-        if (!d || Number.isNaN(m) || !r.libelle.trim()) continue;
-        if (acc) {
-          const fp = fingerprint(acc.id, d, m, r.libelle.trim());
-          if ((existing && existing.has(fp)) || seen.has(fp)) {
-            dups++;
-            continue;
-          }
-          seen.add(fp);
-        }
-        itemLines++;
-      }
-      if (!acc) unassigned += itemLines;
-      else {
-        lines += itemLines;
-        ready++;
-      }
-    }
-    return { ready, lines, dups, unassigned };
-  }, [queue, accounts, fpByAccount]);
-
-  const pending = queue.filter((q) => q.status === "pending" || q.status === "processing").length;
-  const duplicates = queue.filter((q) => q.status === "duplicate").length;
-
-  async function validateAll() {
-    setSaving(true);
-    let total = 0;
-    try {
-      for (const it of queue) {
-        if (it.status !== "done" || !it.resolvedAccountId) continue;
-        const acc = accounts.find((a) => a.id === it.resolvedAccountId);
-        if (!acc) continue;
-        const existing = fpByAccount[acc.id] ?? new Set<string>();
-        const bridgeWeak = bridgeByAccount[acc.id] ?? new Map<string, string>();
-        const seen = new Set<string>();
-        const drafts: TxDraft[] = [];
-        const supersede = new Set<string>();
-        for (const r of it.rows) {
-          if (!r.include) continue;
-          const d = parseDate(r.date);
-          const m = Number(String(r.montant).replace(/\s/g, "").replace(",", "."));
-          if (!d || Number.isNaN(m) || !r.libelle.trim()) continue;
-          const fp = fingerprint(acc.id, d, m, r.libelle.trim());
-          if (existing.has(fp) || seen.has(fp)) continue;
-          seen.add(fp);
-          drafts.push({
-            dateOperation: d,
-            dateValeur: null,
-            libelle: r.libelle.trim(),
-            montant: m,
-            fp,
-          });
-          // L'upload prime : une opération Bridge de même compte+date+montant
-          // sera supprimée au profit de cette ligne.
-          const bId = bridgeWeak.get(weakKey(d, m));
-          if (bId) supersede.add(bId);
-        }
-        if (drafts.length) {
-          const pdf = isPdf(it.file.name);
-          total += await writeImport({
-            account: acc,
-            drafts,
-            origine: pdf ? "import_pdf" : "import_ocr",
-            aVerifier: true,
-            importKind: pdf ? "pdf" : "ocr",
-            fileName: it.file.name,
-            file: it.file,
-            fileHash: it.hash ?? null,
-            supersedeTxIds: [...supersede],
-          });
-        }
-      }
-      setQueue([]);
-      onImported(total);
-    } finally {
-      setSaving(false);
-    }
+  async function retry(st: Statement) {
+    await updateOwned(COL.statements, st.id, { status: "processing", error: null });
+    patch(st.id, { status: "processing", error: null });
+    enqueue([{ id: st.id }]);
   }
+
+  async function remove(st: Statement) {
+    if (!window.confirm(`Retirer « ${st.fileName} » de la liste ? (les transactions déjà importées sont conservées)`)) return;
+    if (st.storagePath) await deleteFile(st.storagePath);
+    await deleteOwned(COL.statements, st.id);
+    setStatements((prev) => prev.filter((s) => s.id !== st.id));
+  }
+
+  // ---- Récap des comptes bancaires détectés.
+  const detectedAccounts = useMemo(() => {
+    const map = new Map<string, { banque: string | null; iban4: string | null; usage: Usage | null; matched: boolean; count: number }>();
+    for (const s of statements) {
+      if (!s.detected) continue;
+      const key = `${norm(s.detected.banque || "")}|${iban4(s.detected.iban) || ""}`;
+      const cur = map.get(key) ?? {
+        banque: s.detected.banque,
+        iban4: iban4(s.detected.iban),
+        usage: s.detected.usage,
+        matched: !!s.resolvedAccountId,
+        count: 0,
+      };
+      cur.count++;
+      if (s.resolvedAccountId) cur.matched = true;
+      map.set(key, cur);
+    }
+    return [...map.values()];
+  }, [statements]);
 
   const accLabel = (a: BankAccount) => {
     const en = entities.find((e) => e.id === a.entityId)?.denomination ?? "—";
     return `${a.libelle} · ${a.banque}${a.ibanPartiel ? ` · …${a.ibanPartiel}` : ""} · ${en}`;
   };
 
-  const detectedLabel = (det: AiDetectedAccount | null | undefined) => {
-    if (!det) return "compte non détecté";
-    const bits = [det.banque, det.iban ? `…${iban4(det.iban)}` : null, det.periode].filter(Boolean);
-    return bits.length ? bits.join(" · ") : "compte non détecté";
-  };
-
   return (
     <section className="card">
       <SectionHeader icon={Sparkles} title="Relevés bancaires (lecture IA)" />
       <p className="muted" style={{ marginTop: 0, marginBottom: 16, fontSize: 12.5 }}>
-        Dépose jusqu&apos;à {MAX_FILES} relevés (PDF ou images). L&apos;IA les lit
-        un par un, détecte le compte et reconstitue les opérations. Rien n&apos;est
-        enregistré avant ta validation.
+        Dépose tes relevés (PDF ou images). Ils sont conservés et lus par l&apos;IA :
+        le compte est détecté (banque, IBAN, pro/perso) et les opérations remontent
+        automatiquement dans <strong>Transactions</strong> dès qu&apos;un compte est rattaché.
       </p>
 
-      {/* --- Zone de dépôt --- */}
+      {/* Zone de dépôt */}
       <div
         className={`dropzone${drag ? " over" : ""}`}
         onClick={() => inputRef.current?.click()}
@@ -350,7 +458,7 @@ export default function StatementImport({
         <div className="dropzone-title">Glisse tes relevés ici</div>
         <div className="dropzone-sub">
           ou <span className="dropzone-link">parcours tes fichiers</span> — PDF, JPEG, PNG
-          {accounts.length === 0 && " · crée d'abord une entité dans Paramètres"}
+          {working && " · lecture en cours…"}
         </div>
         <input
           ref={inputRef}
@@ -359,299 +467,194 @@ export default function StatementImport({
           accept=".pdf,image/*"
           style={{ display: "none" }}
           onChange={(e) => {
-            if (e.target.files?.length) addFiles(e.target.files);
+            if (e.target.files?.length) void addFiles(e.target.files);
             e.target.value = "";
           }}
         />
       </div>
 
-      {queue.length > 0 && (
-        <>
-          {/* --- Barre de synthèse --- */}
-          <div className="toolbar" style={{ marginTop: 16 }}>
-            <span>
-              <strong>{queue.length}</strong> fichier(s)
-            </span>
-            {pending > 0 && (
-              <span style={{ color: "var(--muted)" }}>
-                <Loader2 size={13} style={{ verticalAlign: "-2px" }} className="spin" />{" "}
-                <strong>{pending}</strong> en lecture…
-              </span>
-            )}
-            <span style={{ color: "var(--green-dark)" }}>
-              <strong>{stats.lines}</strong> ligne(s) à importer
-            </span>
-            {stats.dups > 0 && (
-              <span style={{ color: "var(--amber)" }}>
-                <strong>{stats.dups}</strong> doublon(s) ignoré(s)
-              </span>
-            )}
-            {stats.unassigned > 0 && (
-              <span style={{ color: "var(--red)" }}>
-                <strong>{stats.unassigned}</strong> ligne(s) sans compte rattaché
-              </span>
-            )}
-            {duplicates > 0 && (
-              <span style={{ color: "var(--amber)" }}>
-                <strong>{duplicates}</strong> relevé(s) déjà importé(s), rejeté(s)
-              </span>
-            )}
-            <button
-              className="btn secondary"
-              style={{ marginLeft: "auto" }}
-              disabled={running || saving}
-              onClick={() => setQueue([])}
-            >
-              <Trash2 />
-              Vider
-            </button>
-            <button
-              className="btn"
-              disabled={running || saving || stats.lines === 0}
-              onClick={validateAll}
-            >
-              {saving ? "Import…" : `Valider (${stats.lines})`}
-            </button>
-          </div>
+      {rejected.length > 0 && (
+        <p style={{ marginTop: 10, fontSize: 12.5, color: "var(--amber)" }}>
+          {rejected.length} relevé(s) déjà importé(s), ignoré(s) : {rejected.join(", ")}
+        </p>
+      )}
 
-          {/* --- Liste des fichiers --- */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {queue.map((it) => (
-              <FileCard
-                key={it.id}
-                item={it}
-                accounts={accounts}
-                entities={entities}
-                accLabel={accLabel}
-                detectedLabel={detectedLabel}
-                creatingFor={creatingFor}
-                newEntityId={newEntityId}
-                onSetResolved={(v) => {
-                  if (v === CREATE) {
-                    setCreatingFor(it.id);
-                  } else {
-                    setCreatingFor((c) => (c === it.id ? null : c));
-                    patch(it.id, { resolvedAccountId: v });
-                  }
-                }}
-                onSetNewEntity={setNewEntityId}
-                onCreateAccount={() => createAccountFor(it)}
-                onToggleExpand={() => patch(it.id, { expanded: !it.expanded })}
-                onEditRow={(idx, p) =>
-                  patch(it.id, {
-                    rows: it.rows.map((r, j) => (j === idx ? { ...r, ...p } : r)),
-                  })
-                }
-                onRemove={() => setQueue((prev) => prev.filter((q) => q.id !== it.id))}
-              />
+      {/* Comptes bancaires détectés */}
+      {detectedAccounts.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
+            Comptes détectés
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {detectedAccounts.map((d, i) => (
+              <div key={i} className="detected-acc">
+                <Landmark size={14} />
+                <span>{d.banque || "Banque inconnue"}{d.iban4 ? ` · …${d.iban4}` : ""}</span>
+                {d.usage && <UsageBadge usage={d.usage} />}
+                <span className={`badge ${d.matched ? "rattache" : "verif"}`} style={{ marginLeft: 2 }}>
+                  {d.matched ? "rattaché" : "à rattacher"}
+                </span>
+              </div>
             ))}
           </div>
-        </>
+        </div>
+      )}
+
+      {/* Liste des relevés */}
+      {statements.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
+          {statements.map((st) => (
+            <StatementRow
+              key={st.id}
+              st={st}
+              accounts={accounts}
+              entities={entities}
+              accLabel={accLabel}
+              creating={creatingFor === st.id}
+              newEntityId={newEntityId}
+              onAssign={(v) => assignAccount(st, v)}
+              onSetNewEntity={setNewEntityId}
+              onCreateAccount={() => createAccountFor(st)}
+              onRetry={() => retry(st)}
+              onRemove={() => remove(st)}
+            />
+          ))}
+        </div>
       )}
     </section>
   );
 }
 
-function statusIcon(s: Status) {
-  if (s === "processing")
-    return <Loader2 size={18} className="spin" style={{ color: "var(--green)" }} />;
-  if (s === "done")
-    return <CheckCircle2 size={18} style={{ color: "var(--green)" }} />;
-  if (s === "error")
-    return <AlertCircle size={18} style={{ color: "var(--red)" }} />;
-  if (s === "duplicate")
-    return <AlertCircle size={18} style={{ color: "var(--amber)" }} />;
-  return <Loader2 size={18} style={{ color: "var(--muted-2)" }} />;
+function UsageBadge({ usage }: { usage: Usage }) {
+  const pro = usage === "pro";
+  return (
+    <span className="usage-pill" data-usage={usage} style={{ pointerEvents: "none" }}>
+      {pro ? <Briefcase size={11} /> : <User size={11} />}
+      {pro ? "Pro" : "Perso"}
+    </span>
+  );
 }
 
-function FileCard({
-  item,
+function statusIcon(s: Statement["status"]) {
+  if (s === "processing") return <Loader2 size={18} className="spin" style={{ color: "var(--green)" }} />;
+  if (s === "imported") return <CheckCircle2 size={18} style={{ color: "var(--green)" }} />;
+  if (s === "ready") return <AlertCircle size={18} style={{ color: "var(--amber)" }} />;
+  if (s === "empty") return <AlertCircle size={18} style={{ color: "var(--muted-2)" }} />;
+  return <AlertCircle size={18} style={{ color: "var(--red)" }} />;
+}
+
+function StatementRow({
+  st,
   accounts,
   entities,
   accLabel,
-  detectedLabel,
-  creatingFor,
+  creating,
   newEntityId,
-  onSetResolved,
+  onAssign,
   onSetNewEntity,
   onCreateAccount,
-  onToggleExpand,
-  onEditRow,
+  onRetry,
   onRemove,
 }: {
-  item: QueueItem;
+  st: Statement;
   accounts: BankAccount[];
   entities: Entity[];
   accLabel: (a: BankAccount) => string;
-  detectedLabel: (d: AiDetectedAccount | null | undefined) => string;
-  creatingFor: string | null;
+  creating: boolean;
   newEntityId: string;
-  onSetResolved: (v: string) => void;
+  onAssign: (v: string) => void;
   onSetNewEntity: (v: string) => void;
   onCreateAccount: () => void;
-  onToggleExpand: () => void;
-  onEditRow: (idx: number, p: Partial<EditRow>) => void;
+  onRetry: () => void;
   onRemove: () => void;
 }) {
-  const pdf = isPdf(item.file.name);
-  const nbIncluded = item.rows.filter((r) => r.include).length;
-  const canCreate = !!(item.detected && (item.detected.banque || item.detected.iban));
-  const isCreating = creatingFor === item.id;
+  const pdf = isPdf(st.fileName);
+  const det = st.detected;
+  const detLabel = det
+    ? [det.banque, det.iban ? `…${iban4(det.iban)}` : null, det.periode].filter(Boolean).join(" · ") || "compte non détecté"
+    : "compte non détecté";
+  const canCreate = !!(det && (det.banque || det.iban));
+  const resolvedAcc = accounts.find((a) => a.id === st.resolvedAccountId);
 
   return (
     <div className="filecard">
       <div className="filecard-head">
-        <span className="filecard-status">{statusIcon(item.status)}</span>
-        <span className="filecard-type">
-          {pdf ? <FileText size={16} /> : <ImageIcon size={16} />}
-        </span>
+        <span className="filecard-status">{statusIcon(st.status)}</span>
+        <span className="filecard-type">{pdf ? <FileText size={16} /> : <ImageIcon size={16} />}</span>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div className="filecard-name" title={item.file.name}>
-            {item.file.name}
-          </div>
-          <div className="filecard-meta">
-            {item.status === "processing" && "Lecture par l'IA…"}
-            {item.status === "pending" && "En attente…"}
-            {item.status === "duplicate" && (
-              <span style={{ color: "var(--amber)" }}>
-                Relevé déjà importé — rejeté (aucune lecture IA).
+          <div className="filecard-name" title={st.fileName}>
+            {st.fileName}
+            {det?.usage && (
+              <span style={{ marginLeft: 8 }}>
+                <UsageBadge usage={det.usage} />
               </span>
             )}
-            {item.status === "error" && (
-              <span style={{ color: "var(--red)" }}>{item.error}</span>
+          </div>
+          <div className="filecard-meta">
+            {st.status === "processing" && "Lecture par l'IA…"}
+            {st.status === "empty" && (
+              <span style={{ color: "var(--amber)" }}>
+                Aucune opération détectée (ce fichier n&apos;est peut-être pas un relevé bancaire).
+              </span>
             )}
-            {item.status === "done" && (
+            {st.status === "error" && <span style={{ color: "var(--red)" }}>{st.error}</span>}
+            {st.status === "ready" && (
               <>
-                {detectedLabel(item.detected)} · <strong>{item.rows.length}</strong> opération(s)
-                {item.truncated && (
-                  <span style={{ color: "var(--amber)" }}> · relevé long, vérifie la fin</span>
-                )}
+                {detLabel} · <strong>{st.nbRows}</strong> opération(s) — rattache un compte pour importer
+              </>
+            )}
+            {st.status === "imported" && (
+              <>
+                {detLabel} · <strong>{st.nbImported}</strong> importée(s)
+                {resolvedAcc ? ` → ${resolvedAcc.libelle}` : ""}
               </>
             )}
           </div>
         </div>
 
-        {item.status === "done" && (
+        {st.status === "ready" && (
           <div className="filecard-account">
-            <select
-              value={
-                item.resolvedAccountId || (isCreating ? CREATE : "")
-              }
-              onChange={(e) => onSetResolved(e.target.value)}
-            >
-              <option value="">— compte non rattaché —</option>
+            <select value={creating ? CREATE : ""} onChange={(e) => onAssign(e.target.value)}>
+              <option value="">— rattacher à un compte —</option>
               {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {accLabel(a)}
-                </option>
+                <option key={a.id} value={a.id}>{accLabel(a)}</option>
               ))}
               {canCreate && (
                 <option value={CREATE}>
-                  ＋ Créer « {item.detected?.banque || "compte"}
-                  {item.detected?.iban ? ` …${iban4(item.detected.iban)}` : ""} »
+                  ＋ Créer « {det?.banque || "compte"}{det?.iban ? ` …${iban4(det.iban)}` : ""} »
                 </option>
               )}
             </select>
           </div>
         )}
 
-        {item.status === "done" && (
-          <button className="filecard-expand" onClick={onToggleExpand} title="Voir les lignes">
-            {item.expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-            <span>{nbIncluded}</span>
+        {st.status === "error" && (
+          <button className="icon-btn" onClick={onRetry} title="Réessayer">
+            <RotateCw size={15} />
           </button>
         )}
-        {(item.status === "error" || item.status === "done" || item.status === "duplicate") && (
+        {st.status !== "processing" && (
           <button className="filecard-remove" onClick={onRemove} title="Retirer">
             <Trash2 size={15} />
           </button>
         )}
       </div>
 
-      {/* Création de compte inline */}
-      {isCreating && (
+      {creating && (
         <div className="filecard-create">
           <span className="muted" style={{ fontSize: 12.5 }}>
-            Nouveau compte « {item.detected?.banque || "Banque"}
-            {item.detected?.iban ? ` …${iban4(item.detected.iban)}` : ""} » →
+            Nouveau compte « {det?.banque || "Banque"}{det?.iban ? ` …${iban4(det.iban)}` : ""} » →
           </span>
           <select value={newEntityId} onChange={(e) => onSetNewEntity(e.target.value)}>
             <option value="">— entité de rattachement —</option>
             {entities.map((en) => (
-              <option key={en.id} value={en.id}>
-                {en.denomination}
-              </option>
+              <option key={en.id} value={en.id}>{en.denomination}</option>
             ))}
           </select>
           <button className="btn secondary" disabled={!newEntityId} onClick={onCreateAccount}>
             <Plus />
-            Créer le compte
+            Créer et importer
           </button>
-        </div>
-      )}
-
-      {/* Lignes éditables */}
-      {item.expanded && item.status === "done" && (
-        <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", marginTop: 4 }}>
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Import ?</th>
-                <th>Date</th>
-                <th>Libellé</th>
-                <th>Montant</th>
-              </tr>
-            </thead>
-            <tbody>
-              {item.rows.map((r, i) => {
-                const d = parseDate(r.date);
-                const m = Number(String(r.montant).replace(/\s/g, "").replace(",", "."));
-                const valid = !!(d && !Number.isNaN(m) && r.libelle.trim());
-                return (
-                  <tr key={i} style={{ opacity: valid ? 1 : 0.6 }}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={r.include}
-                        onChange={(e) => onEditRow(i, { include: e.target.checked })}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        value={r.date}
-                        onChange={(e) => onEditRow(i, { date: e.target.value })}
-                        style={{ maxWidth: 110 }}
-                        placeholder="2024-01-15"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        value={r.libelle}
-                        onChange={(e) => onEditRow(i, { libelle: e.target.value })}
-                        style={{ maxWidth: 340, width: 340 }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        value={r.montant}
-                        onChange={(e) => onEditRow(i, { montant: e.target.value })}
-                        style={{ maxWidth: 90 }}
-                        placeholder="-12.34"
-                      />
-                      {valid && (
-                        <span
-                          className="muted"
-                          style={{ marginLeft: 6, fontSize: 11, color: m < 0 ? "var(--red)" : "var(--green)" }}
-                        >
-                          {fmtAmount(m)}
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
         </div>
       )}
     </div>

@@ -16,6 +16,7 @@ import type {
   ImportKind,
   Transaction,
   TransactionOrigin,
+  Usage,
 } from "./types";
 
 /** Une transaction prête à écrire (déjà validée / dédupliquée en amont). */
@@ -37,6 +38,7 @@ export interface WriteImportParams {
   file?: File | null;
   fileHash?: string | null; // empreinte du fichier source (anti ré-upload)
   supersedeTxIds?: string[]; // transactions Bridge à supprimer (l'upload prime)
+  usage?: Usage | null; // pro/perso détecté via le relevé (override par ligne)
 }
 
 /**
@@ -89,6 +91,7 @@ export async function writeImport(params: WriteImportParams): Promise<number> {
     file,
     fileHash,
     supersedeTxIds,
+    usage,
   } = params;
 
   // L'upload prime : on retire d'abord les transactions Bridge en conflit.
@@ -132,6 +135,7 @@ export async function writeImport(params: WriteImportParams): Promise<number> {
         codeSuggere: null,
         codeValide: null,
         categorie: null,
+        usage: usage ?? null,
         justificatifStatus: "manquant",
         fluxInterne: false,
         transactionMiroirId: null,

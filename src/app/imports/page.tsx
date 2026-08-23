@@ -108,8 +108,6 @@ function Imports() {
         <StatementImport
           entities={entities}
           accounts={accounts}
-          fpByAccount={fpByAccount}
-          bridgeByAccount={bridgeByAccount}
           existingFileHashes={existingFileHashes}
           onImported={onImported}
           onAccountsChanged={() => reload()}

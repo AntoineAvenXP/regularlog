@@ -14,6 +14,7 @@ export interface AiDetectedAccount {
   iban: string | null;
   titulaire: string | null;
   periode: string | null;
+  usage: "pro" | "perso" | null; // professionnel / personnel détecté via le relevé
 }
 
 export interface AiExtractResult {

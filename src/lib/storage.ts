@@ -31,6 +31,12 @@ export function documentPath(docId: string, filename: string): string {
   return `users/${uid()}/documents/${docId}/${safe}`;
 }
 
+/** Chemin Storage d'un relevé importé : users/{uid}/statements/{id}/{fichier}. */
+export function statementPath(statementId: string, filename: string): string {
+  const safe = filename.replace(/[^\w.\-]/g, "_");
+  return `users/${uid()}/statements/${statementId}/${safe}`;
+}
+
 /** Upload d'un Blob (PDF généré) au chemin donné. */
 export async function uploadBlob(path: string, blob: Blob, contentType: string): Promise<void> {
   await uploadBytes(ref(storage, path), blob, { contentType });

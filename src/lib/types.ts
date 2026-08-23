@@ -190,6 +190,42 @@ export interface GeneratedDocument {
   createdAt?: unknown;
 }
 
+/**
+ * Relevé importé par IA, PERSISTANT (survit à la navigation). Le fichier est
+ * conservé dans Storage dès le dépôt ; le traitement IA remplit le compte
+ * détecté et les opérations, importées au fil de l'eau quand le compte est
+ * rattaché.
+ */
+export type StatementStatus =
+  | "processing" // en cours de lecture IA
+  | "ready" // lu, en attente de rattachement d'un compte
+  | "imported" // transactions écrites
+  | "empty" // aucune opération détectée
+  | "error";
+
+export interface Statement {
+  id: string;
+  ownerUid: string;
+  fileName: string;
+  fileHash?: string | null;
+  storagePath: string;
+  status: StatementStatus;
+  error?: string | null;
+  detected?: {
+    banque: string | null;
+    iban: string | null;
+    titulaire: string | null;
+    periode: string | null;
+    usage: Usage | null;
+  } | null;
+  resolvedAccountId?: string | null;
+  // Opérations extraites en attente d'import (vidées une fois importées).
+  rows?: { date: string | null; libelle: string; montant: number | null }[];
+  nbRows?: number;
+  nbImported?: number;
+  createdAt?: unknown;
+}
+
 export type ImportKind = "csv" | "excel" | "pdf" | "ocr" | "bridge";
 
 /** Lot d'import : historique + annulation d'un import complet (§9). */

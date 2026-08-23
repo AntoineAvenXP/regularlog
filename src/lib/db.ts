@@ -24,6 +24,7 @@ export const COL = {
   codes: "accountingCodes",
   categories: "categories",
   imports: "imports",
+  statements: "statements",
   dossiers: "dossiers",
   documents: "generatedDocuments",
 } as const;

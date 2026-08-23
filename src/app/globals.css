@@ -720,6 +720,23 @@ table.grid select {
   text-decoration: underline;
 }
 
+/* pastille « compte détecté » */
+.detected-acc {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #f8faf8;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.detected-acc svg {
+  color: var(--green);
+}
+
 /* ---------- Carte fichier (file d'attente d'import) ---------- */
 .filecard {
   border: 1px solid var(--border);

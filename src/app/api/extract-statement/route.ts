@@ -20,19 +20,23 @@ interface DetectedAccount {
   iban: string | null; // IBAN complet ou partiel tel qu'imprimé
   titulaire: string | null;
   periode: string | null; // ex. "2024-01" ou "janvier 2024"
+  usage: "pro" | "perso" | null; // professionnel ou personnel, déduit du relevé
 }
 
 const PROMPT =
   "Ce document est un relevé de compte bancaire. Tu dois (1) identifier le compte " +
   "et (2) extraire TOUTES les lignes d'opération, sans en oublier ni en inventer.\n" +
   "Réponds UNIQUEMENT par un objet JSON strict, sans aucun texte autour, au format :\n" +
-  '{"compte":{"banque":"texte|null","iban":"texte|null","titulaire":"texte|null","periode":"AAAA-MM|null"},' +
+  '{"compte":{"banque":"texte|null","iban":"texte|null","titulaire":"texte|null","periode":"AAAA-MM|null","usage":"pro|perso|null"},' +
   '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre}]}\n' +
   "Règles pour \"compte\" :\n" +
   "- banque = nom de la banque émettrice du relevé (ex. Qonto, BNP Paribas, Crédit Agricole).\n" +
   "- iban = IBAN du compte tel qu'imprimé (complet ou partiel), sinon null.\n" +
   "- titulaire = nom du titulaire du compte, sinon null.\n" +
   "- periode = mois principal du relevé au format AAAA-MM, sinon null.\n" +
+  "- usage = \"pro\" si le compte est professionnel (titulaire = société / entreprise, " +
+  "SIRET/TVA visible, banque pro type Qonto/Shine, opérations d'activité), \"perso\" si " +
+  "compte de particulier (salaire, courses, loyer personnel), sinon null si incertain.\n" +
   "Règles pour \"operations\" :\n" +
   "- date = date d'opération (à défaut date de valeur), format ISO AAAA-MM-JJ.\n" +
   "- libelle = libellé complet de l'opération (bénéficiaire, motif, référence).\n" +
@@ -156,11 +160,13 @@ export async function POST(req: NextRequest) {
     if (c) {
       const str = (v: unknown) =>
         typeof v === "string" && v.trim() ? v.trim() : null;
+      const u = str(c.usage)?.toLowerCase();
       account = {
         banque: str(c.banque),
         iban: str(c.iban),
         titulaire: str(c.titulaire),
         periode: str(c.periode),
+        usage: u === "pro" || u === "perso" ? u : null,
       };
     }
   } else {
