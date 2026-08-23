@@ -1,9 +1,9 @@
 "use client";
 
 // Moteur d'import des relevés — monté AU-DESSUS des pages (dans le layout) pour
-// SURVIVRE à la navigation : la file de traitement, la progression et les
-// fichiers en mémoire restent vivants même quand on change de page. La section
-// « Relevés » de la page Imports n'est plus qu'un afficheur de ce moteur.
+// SURVIVRE à la navigation. Gère le MULTI-COMPTES : un fichier peut contenir
+// plusieurs comptes (numéros différents) ; chaque compte détecté est rattaché et
+// importé séparément.
 
 import {
   createContext,
@@ -35,6 +35,7 @@ import type {
   BankAccount,
   Entity,
   Statement,
+  StatementPart,
   Transaction,
   Usage,
 } from "./types";
@@ -55,6 +56,12 @@ const iban4 = (iban?: string | null): string | null => {
   return digits.length >= 4 ? digits.slice(-4) : null;
 };
 
+const partKeyOf = (iban?: string | null): string | null => {
+  if (!iban) return null;
+  const d = iban.replace(/[^a-z0-9]/gi, "").toUpperCase();
+  return d.length >= 4 ? d : null;
+};
+
 function mimeOf(name: string): string {
   if (isPdf(name)) return "application/pdf";
   const ext = name.split(".").pop()?.toLowerCase();
@@ -65,15 +72,39 @@ function mimeOf(name: string): string {
   return "application/octet-stream";
 }
 
+/** Ramène les relevés « hérités » (mono-compte) au format multi-comptes. */
+function normalizeStatement(s: Statement): Statement {
+  if (s.parts && s.parts.length) return s;
+  if (s.detected || s.rows || s.importId || s.resolvedAccountId) {
+    const part: StatementPart = {
+      key: partKeyOf(s.detected?.iban) ?? "legacy",
+      detected: s.detected ?? null,
+      rows: s.rows ?? [],
+      nbRows: s.nbRows ?? (s.rows?.length ?? 0),
+      resolvedAccountId: s.resolvedAccountId ?? null,
+      importId: s.importId ?? null,
+      nbImported: s.nbImported ?? 0,
+      imported: s.status === "imported",
+    };
+    return { ...s, parts: [part] };
+  }
+  return { ...s, parts: s.parts ?? [] };
+}
+
+function statusFromParts(parts: StatementPart[]): Statement["status"] {
+  if (parts.length === 0) return "empty";
+  return parts.every((p) => p.imported) ? "imported" : "ready";
+}
+
 export interface StatementsCtx {
   ready: boolean;
   statements: Statement[];
   progress: Record<string, { done: number; total: number }>;
   accounts: BankAccount[];
   entities: Entity[];
-  addFiles: (files: FileList | File[]) => Promise<string[]>; // renvoie les rejetés
-  assignAccount: (st: Statement, accountId: string) => Promise<void>;
-  createAccountFor: (st: Statement, entityId: string) => Promise<void>;
+  addFiles: (files: FileList | File[]) => Promise<string[]>;
+  assignAccount: (st: Statement, partKey: string, accountId: string) => Promise<void>;
+  createAccountFor: (st: Statement, partKey: string, entityId: string) => Promise<void>;
   retry: (st: Statement) => Promise<void>;
   remove: (st: Statement) => Promise<void>;
 }
@@ -102,7 +133,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
   );
 
   const loadStatements = useCallback(async () => {
-    const list = await listOwned<Statement>(COL.statements);
+    const list = (await listOwned<Statement>(COL.statements)).map(normalizeStatement);
     list.sort((a, b) => (a.fileName < b.fileName ? -1 : 1));
     setStatements(list);
     return list;
@@ -116,13 +147,10 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     ]);
     setAccounts(acc);
     setEntities(ent);
-    importHashesRef.current = new Set(
-      imports.map((i) => i.fileHash).filter(Boolean) as string[]
-    );
+    importHashesRef.current = new Set(imports.map((i) => i.fileHash).filter(Boolean) as string[]);
   }, []);
 
-  // ---- Rattachement automatique d'un compte détecté à un compte existant.
-  const autoMatch = useCallback((det: Statement["detected"]): string => {
+  const autoMatch = useCallback((det: StatementPart["detected"]): string => {
     if (!det) return "";
     const acc = accountsRef.current;
     const four = iban4(det.iban);
@@ -155,15 +183,18 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     return { existing, bridgeWeak };
   }
 
-  const importResolved = useCallback(
-    async (st: Statement, accountId: string) => {
+  /** Écrit les opérations d'un compte détecté (part) vers un compte Regularlog. */
+  const importPart = useCallback(
+    async (st: Statement, partKey: string, accountId: string): Promise<Statement> => {
+      const part = (st.parts ?? []).find((p) => p.key === partKey);
       const acc = accountsRef.current.find((a) => a.id === accountId);
-      if (!acc || !st.rows) return;
+      if (!part || !acc || !part.rows) return st;
+
       const { existing, bridgeWeak } = await buildDedup(accountId);
       const seen = new Set<string>();
       const drafts: TxDraft[] = [];
       const supersede = new Set<string>();
-      for (const r of st.rows) {
+      for (const r of part.rows) {
         const d = parseDate(r.date);
         const m = r.montant;
         if (!d || m == null || !r.libelle?.trim()) continue;
@@ -186,19 +217,27 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
             file: null,
             fileHash: st.fileHash ?? null,
             supersedeTxIds: [...supersede],
-            usage: st.detected?.usage ?? null,
+            usage: part.detected?.usage ?? null,
           })
-        : null;
-      const update = {
-        status: "imported" as const,
-        resolvedAccountId: accountId,
-        nbImported: res?.count ?? 0,
-        importId: res?.importId ?? null,
-        rows: [],
-      };
-      await updateOwned(COL.statements, st.id, update);
-      patch(st.id, update);
-      if (res?.importId) importHashesRef.current.add(st.fileHash ?? "");
+        : { importId: "", count: 0 };
+
+      const parts = (st.parts ?? []).map((p) =>
+        p.key === partKey
+          ? {
+              ...p,
+              resolvedAccountId: accountId,
+              importId: res.importId || null,
+              nbImported: res.count,
+              imported: true,
+              rows: [],
+            }
+          : p
+      );
+      const upd = { parts, status: statusFromParts(parts) };
+      await updateOwned(COL.statements, st.id, upd);
+      patch(st.id, upd);
+      if (res.importId && st.fileHash) importHashesRef.current.add(st.fileHash);
+      return { ...st, ...upd };
     },
     [patch]
   );
@@ -214,8 +253,6 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
         }
         const pages = await toPageImages(file);
 
-        // Copie PDF légère persistée (best-effort) — le traitement continue même
-        // si l'upload échoue.
         if (!st.storagePath && pages.length) {
           try {
             const blob = await buildStatementPdf(pages);
@@ -229,7 +266,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const { account, rows } = await extractFromImages(pages, (done, total) =>
+        const { groups } = await extractFromImages(pages, (done, total) =>
           setProgress((p) => ({ ...p, [st.id]: { done, total } }))
         );
         setProgress((p) => {
@@ -238,47 +275,62 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           return n;
         });
 
-        const detected = account
-          ? {
-              banque: account.banque,
-              iban: account.iban,
-              titulaire: account.titulaire,
-              periode: account.periode,
-              usage: (account.usage ?? null) as Usage | null,
-            }
-          : null;
-        const cleanRows = rows.map((r) => ({
-          date: r.date ?? null,
-          libelle: r.libelle,
-          montant: r.montant,
-        }));
-        const nbRows = cleanRows.filter((r) => r.date && r.montant != null && r.libelle).length;
+        const seenKeys = new Set<string>();
+        const parts: StatementPart[] = [];
+        groups.forEach((g, i) => {
+          const cleanRows = g.rows.map((r) => ({
+            date: r.date ?? null,
+            libelle: r.libelle,
+            montant: r.montant,
+          }));
+          const nbRows = cleanRows.filter((r) => r.date && r.montant != null && r.libelle).length;
+          if (nbRows === 0) return;
+          let key = partKeyOf(g.account?.iban) ?? `part${i}`;
+          while (seenKeys.has(key)) key = `${key}_${i}`;
+          seenKeys.add(key);
+          parts.push({
+            key,
+            detected: g.account
+              ? {
+                  banque: g.account.banque,
+                  iban: g.account.iban,
+                  titulaire: g.account.titulaire,
+                  periode: g.account.periode,
+                  usage: (g.account.usage ?? null) as Usage | null,
+                }
+              : null,
+            rows: cleanRows,
+            nbRows,
+            resolvedAccountId: null,
+            importId: null,
+            nbImported: 0,
+            imported: false,
+          });
+        });
 
-        if (nbRows === 0) {
-          await updateOwned(COL.statements, st.id, { detected, rows: [], nbRows: 0, status: "empty" });
-          patch(st.id, { detected, rows: [], nbRows: 0, status: "empty" });
+        const totalRows = parts.reduce((s, p) => s + p.nbRows, 0);
+        if (parts.length === 0) {
+          await updateOwned(COL.statements, st.id, { parts: [], nbRows: 0, status: "empty" });
+          patch(st.id, { parts: [], nbRows: 0, status: "empty" });
           return;
         }
 
-        const matched = autoMatch(detected);
-        const base = {
-          detected,
-          rows: cleanRows,
-          nbRows,
-          resolvedAccountId: matched || null,
-          status: matched ? ("processing" as const) : ("ready" as const),
-        };
-        await updateOwned(COL.statements, st.id, base);
-        const merged: Statement = { ...st, ...base };
-        patch(st.id, merged);
-        if (matched) await importResolved(merged, matched);
+        let cur: Statement = { ...st, parts, nbRows: totalRows, status: statusFromParts(parts) };
+        await updateOwned(COL.statements, st.id, { parts, nbRows: totalRows, status: cur.status });
+        patch(st.id, { parts, nbRows: totalRows, status: cur.status });
+
+        // Auto-import des comptes reconnus automatiquement.
+        for (const p of parts) {
+          const matched = autoMatch(p.detected);
+          if (matched) cur = await importPart(cur, p.key, matched);
+        }
       } catch (e) {
         const msg = (e as Error).message;
         await updateOwned(COL.statements, st.id, { status: "error", error: msg });
         patch(st.id, { status: "error", error: msg });
       }
     },
-    [autoMatch, importResolved, patch]
+    [autoMatch, importPart, patch]
   );
 
   // ---- File de traitement séquentielle (persiste à la navigation).
@@ -291,7 +343,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     try {
       while (queueRef.current.length) {
         const id = queueRef.current.shift()!;
-        const st = (await listOwned<Statement>(COL.statements)).find((s) => s.id === id);
+        const st = (await listOwned<Statement>(COL.statements)).map(normalizeStatement).find((s) => s.id === id);
         if (st) await processStatement(st);
       }
     } finally {
@@ -307,7 +359,6 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     [drain]
   );
 
-  // ---- Chargement initial + reprise (une seule fois par session authentifiée).
   useEffect(() => {
     if (!user) {
       setStatements([]);
@@ -363,12 +414,8 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           fileHash: hash ?? null,
           storagePath: "",
           status: "processing" as const,
-          detected: null,
-          resolvedAccountId: null,
-          importId: null,
-          rows: [],
+          parts: [],
           nbRows: 0,
-          nbImported: 0,
         });
         const st: Statement = {
           id,
@@ -377,12 +424,8 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           fileHash: hash ?? null,
           storagePath: "",
           status: "processing",
-          detected: null,
-          resolvedAccountId: null,
-          importId: null,
-          rows: [],
+          parts: [],
           nbRows: 0,
-          nbImported: 0,
         };
         setStatements((prev) => [st, ...prev]);
         filesRef.current.set(id, file);
@@ -395,16 +438,17 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
   );
 
   const assignAccount = useCallback(
-    async (st: Statement, accountId: string) => {
-      if (accountId) await importResolved(st, accountId);
+    async (st: Statement, partKey: string, accountId: string) => {
+      if (accountId) await importPart(st, partKey, accountId);
     },
-    [importResolved]
+    [importPart]
   );
 
   const createAccountFor = useCallback(
-    async (st: Statement, entityId: string) => {
-      if (!entityId || !st.detected) return;
-      const det = st.detected;
+    async (st: Statement, partKey: string, entityId: string) => {
+      const part = (st.parts ?? []).find((p) => p.key === partKey);
+      if (!entityId || !part?.detected) return;
+      const det = part.detected;
       const id = await createOwned(COL.accounts, {
         entityId,
         banque: det.banque || "Banque",
@@ -425,9 +469,9 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
       };
       accountsRef.current = [...accountsRef.current, newAcc];
       setAccounts((prev) => [...prev, newAcc]);
-      await importResolved({ ...st, detected: det }, id);
+      await importPart(st, partKey, id);
     },
-    [importResolved]
+    [importPart]
   );
 
   const retry = useCallback(
@@ -445,20 +489,26 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     [enqueue, patch]
   );
 
-  /** Supprime un relevé ET, en cascade, toutes les transactions de son import. */
+  /** Supprime un relevé ET, en cascade, toutes les transactions de ses imports. */
   const remove = useCallback(async (st: Statement) => {
-    if (st.importId) {
+    const importIds = (st.parts ?? [])
+      .map((p) => p.importId)
+      .filter(Boolean) as string[];
+    if (importIds.length) {
       const all = await listOwned<Transaction>(COL.transactions);
-      const toDel = all.filter((t) => t.importId === st.importId);
+      const set = new Set(importIds);
+      const toDel = all.filter((t) => t.importId && set.has(t.importId));
       for (let i = 0; i < toDel.length; i += 400) {
         const b = writeBatch(db);
         for (const t of toDel.slice(i, i + 400)) b.delete(doc(db, COL.transactions, t.id));
         await b.commit();
       }
-      try {
-        await deleteOwned(COL.imports, st.importId);
-      } catch {
-        /* lot déjà supprimé */
+      for (const impId of importIds) {
+        try {
+          await deleteOwned(COL.imports, impId);
+        } catch {
+          /* déjà supprimé */
+        }
       }
     }
     if (st.storagePath) await deleteFile(st.storagePath);

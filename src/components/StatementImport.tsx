@@ -19,7 +19,7 @@ import {
 import { SectionHeader } from "@/components/PageHeader";
 import { isPdf } from "@/lib/storage";
 import { useStatements } from "@/lib/statementsEngine";
-import type { BankAccount, Entity, Statement, Usage } from "@/lib/types";
+import type { BankAccount, Entity, Statement, StatementPart, Usage } from "@/lib/types";
 
 const CREATE = "__create__";
 
@@ -37,9 +37,9 @@ const iban4 = (iban?: string | null): string | null => {
 };
 
 /**
- * Afficheur de l'import de relevés. Toute la logique (file, traitement,
- * progression) vit dans StatementsProvider (monté dans le layout) → elle
- * survit à la navigation. Ce composant lit et pilote ce moteur.
+ * Afficheur de l'import de relevés. La logique (file, traitement, progression,
+ * multi-comptes) vit dans StatementsProvider (monté dans le layout) → elle
+ * survit à la navigation.
  */
 export default function StatementImport() {
   const {
@@ -56,13 +56,13 @@ export default function StatementImport() {
 
   const [drag, setDrag] = useState(false);
   const [rejected, setRejected] = useState<string[]>([]);
+  // Édition de création de compte, clé = `${statementId}::${partKey}`.
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
   const [newEntityId, setNewEntityId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function onFiles(files: FileList | File[]) {
-    const rej = await addFiles(files);
-    setRejected(rej);
+    setRejected(await addFiles(files));
   }
 
   function onDrop(e: React.DragEvent) {
@@ -71,26 +71,27 @@ export default function StatementImport() {
     if (e.dataTransfer.files?.length) void onFiles(e.dataTransfer.files);
   }
 
-  async function onAssign(st: Statement, value: string) {
+  async function onAssign(st: Statement, part: StatementPart, value: string) {
+    const ck = `${st.id}::${part.key}`;
     if (value === CREATE) {
-      setCreatingFor(st.id);
+      setCreatingFor(ck);
       return;
     }
-    setCreatingFor((c) => (c === st.id ? null : c));
-    if (value) await assignAccount(st, value);
+    setCreatingFor((c) => (c === ck ? null : c));
+    if (value) await assignAccount(st, part.key, value);
   }
 
-  async function onCreate(st: Statement) {
+  async function onCreate(st: Statement, part: StatementPart) {
     if (!newEntityId) return;
-    await createAccountFor(st, newEntityId);
+    await createAccountFor(st, part.key, newEntityId);
     setCreatingFor(null);
     setNewEntityId("");
   }
 
   async function onRemove(st: Statement) {
-    const n = st.nbImported ?? 0;
+    const n = (st.parts ?? []).reduce((s, p) => s + (p.nbImported ?? 0), 0);
     const msg =
-      st.status === "imported" && n > 0
+      n > 0
         ? `Supprimer « ${st.fileName} » et ses ${n} transaction(s) importée(s) ?\n\nLes transactions correspondantes seront retirées de Regularlog. Cette action est irréversible.`
         : `Retirer « ${st.fileName} » de la liste ?`;
     if (window.confirm(msg)) await remove(st);
@@ -98,19 +99,22 @@ export default function StatementImport() {
 
   const working = statements.some((s) => s.status === "processing");
 
+  // Récap des comptes détectés (tous relevés confondus).
   const detectedAccounts = useMemo(() => {
     const map = new Map<string, { banque: string | null; iban4: string | null; usage: Usage | null; matched: boolean }>();
     for (const s of statements) {
-      if (!s.detected) continue;
-      const key = `${norm(s.detected.banque || "")}|${iban4(s.detected.iban) || ""}`;
-      const cur = map.get(key) ?? {
-        banque: s.detected.banque,
-        iban4: iban4(s.detected.iban),
-        usage: s.detected.usage,
-        matched: !!s.resolvedAccountId,
-      };
-      if (s.resolvedAccountId) cur.matched = true;
-      map.set(key, cur);
+      for (const p of s.parts ?? []) {
+        if (!p.detected) continue;
+        const key = `${norm(p.detected.banque || "")}|${iban4(p.detected.iban) || p.key}`;
+        const cur = map.get(key) ?? {
+          banque: p.detected.banque,
+          iban4: iban4(p.detected.iban),
+          usage: p.detected.usage,
+          matched: !!p.resolvedAccountId,
+        };
+        if (p.resolvedAccountId) cur.matched = true;
+        map.set(key, cur);
+      }
     }
     return [...map.values()];
   }, [statements]);
@@ -124,10 +128,10 @@ export default function StatementImport() {
     <section className="card">
       <SectionHeader icon={Sparkles} title="Relevés bancaires (lecture IA)" />
       <p className="muted" style={{ marginTop: 0, marginBottom: 16, fontSize: 12.5 }}>
-        Dépose tes relevés (PDF ou images). Ils sont conservés et lus par l&apos;IA :
-        le compte est détecté (banque, IBAN, pro/perso) et les opérations remontent
-        automatiquement dans <strong>Transactions</strong> dès qu&apos;un compte est
-        rattaché. La lecture continue même si tu changes de page.
+        Dépose tes relevés (PDF ou images). L&apos;IA détecte le(s) compte(s) — un
+        même relevé peut en contenir plusieurs (numéros différents) — et les
+        opérations remontent dans <strong>Transactions</strong> dès qu&apos;un compte
+        est rattaché. La lecture continue même si tu changes de page.
       </p>
 
       <div
@@ -197,11 +201,11 @@ export default function StatementImport() {
               accounts={accounts}
               entities={entities}
               accLabel={accLabel}
-              creating={creatingFor === st.id}
+              creatingFor={creatingFor}
               newEntityId={newEntityId}
-              onAssign={(v) => onAssign(st, v)}
+              onAssign={(part, v) => onAssign(st, part, v)}
               onSetNewEntity={setNewEntityId}
-              onCreateAccount={() => onCreate(st)}
+              onCreateAccount={(part) => onCreate(st, part)}
               onRetry={() => retry(st)}
               onRemove={() => onRemove(st)}
             />
@@ -230,13 +234,18 @@ function statusIcon(s: Statement["status"]) {
   return <AlertCircle size={18} style={{ color: "var(--red)" }} />;
 }
 
+function partLabel(det: StatementPart["detected"]): string {
+  if (!det) return "Compte non identifié";
+  return [det.banque, det.iban ? `…${iban4(det.iban)}` : null, det.periode].filter(Boolean).join(" · ") || "Compte détecté";
+}
+
 function StatementRow({
   st,
   progress,
   accounts,
   entities,
   accLabel,
-  creating,
+  creatingFor,
   newEntityId,
   onAssign,
   onSetNewEntity,
@@ -249,21 +258,17 @@ function StatementRow({
   accounts: BankAccount[];
   entities: Entity[];
   accLabel: (a: BankAccount) => string;
-  creating: boolean;
+  creatingFor: string | null;
   newEntityId: string;
-  onAssign: (v: string) => void;
+  onAssign: (part: StatementPart, v: string) => void;
   onSetNewEntity: (v: string) => void;
-  onCreateAccount: () => void;
+  onCreateAccount: (part: StatementPart) => void;
   onRetry: () => void;
   onRemove: () => void;
 }) {
   const pdf = isPdf(st.fileName);
-  const det = st.detected;
-  const detLabel = det
-    ? [det.banque, det.iban ? `…${iban4(det.iban)}` : null, det.periode].filter(Boolean).join(" · ") || "compte non détecté"
-    : "compte non détecté";
-  const canCreate = !!(det && (det.banque || det.iban));
-  const resolvedAcc = accounts.find((a) => a.id === st.resolvedAccountId);
+  const parts = st.parts ?? [];
+  const showParts = (st.status === "ready" || st.status === "imported") && parts.length > 0;
 
   return (
     <div className="filecard">
@@ -271,54 +276,23 @@ function StatementRow({
         <span className="filecard-status">{statusIcon(st.status)}</span>
         <span className="filecard-type">{pdf ? <FileText size={16} /> : <ImageIcon size={16} />}</span>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div className="filecard-name" title={st.fileName}>
-            {st.fileName}
-            {det?.usage && (
-              <span style={{ marginLeft: 8 }}>
-                <UsageBadge usage={det.usage} />
-              </span>
-            )}
-          </div>
+          <div className="filecard-name" title={st.fileName}>{st.fileName}</div>
           <div className="filecard-meta">
             {st.status === "processing" &&
-              (progress
-                ? `Lecture IA — page ${progress.done}/${progress.total}…`
-                : "Envoi et lecture par l'IA…")}
+              (progress ? `Lecture IA — page ${progress.done}/${progress.total}…` : "Envoi et lecture par l'IA…")}
             {st.status === "empty" && (
               <span style={{ color: "var(--amber)" }}>
                 Aucune opération détectée (ce fichier n&apos;est peut-être pas un relevé bancaire).
               </span>
             )}
             {st.status === "error" && <span style={{ color: "var(--red)" }}>{st.error}</span>}
-            {st.status === "ready" && (
+            {showParts && (
               <>
-                {detLabel} · <strong>{st.nbRows}</strong> opération(s) — rattache un compte pour importer
-              </>
-            )}
-            {st.status === "imported" && (
-              <>
-                {detLabel} · <strong>{st.nbImported}</strong> importée(s)
-                {resolvedAcc ? ` → ${resolvedAcc.libelle}` : ""}
+                <strong>{parts.length}</strong> compte(s) détecté(s) · <strong>{st.nbRows ?? 0}</strong> opération(s)
               </>
             )}
           </div>
         </div>
-
-        {st.status === "ready" && (
-          <div className="filecard-account">
-            <select value={creating ? CREATE : ""} onChange={(e) => onAssign(e.target.value)}>
-              <option value="">— rattacher à un compte —</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>{accLabel(a)}</option>
-              ))}
-              {canCreate && (
-                <option value={CREATE}>
-                  ＋ Créer « {det?.banque || "compte"}{det?.iban ? ` …${iban4(det.iban)}` : ""} »
-                </option>
-              )}
-            </select>
-          </div>
-        )}
 
         {st.status === "error" && (
           <button className="icon-btn" onClick={onRetry} title="Réessayer">
@@ -332,21 +306,82 @@ function StatementRow({
         )}
       </div>
 
-      {creating && (
-        <div className="filecard-create">
-          <span className="muted" style={{ fontSize: 12.5 }}>
-            Nouveau compte « {det?.banque || "Banque"}{det?.iban ? ` …${iban4(det.iban)}` : ""} » →
-          </span>
-          <select value={newEntityId} onChange={(e) => onSetNewEntity(e.target.value)}>
-            <option value="">— entité de rattachement —</option>
-            {entities.map((en) => (
-              <option key={en.id} value={en.id}>{en.denomination}</option>
-            ))}
-          </select>
-          <button className="btn secondary" disabled={!newEntityId} onClick={onCreateAccount}>
-            <Plus />
-            Créer et importer
-          </button>
+      {showParts && (
+        <div className="stmt-parts">
+          {parts.map((part) => {
+            const ck = `${st.id}::${part.key}`;
+            const creating = creatingFor === ck;
+            const det = part.detected;
+            const canCreate = !!(det && (det.banque || det.iban));
+            const resolvedAcc = accounts.find((a) => a.id === part.resolvedAccountId);
+            return (
+              <div key={part.key} className="stmt-part">
+                <div className="stmt-part-head">
+                  <span className="stmt-part-icon"><Landmark size={15} /></span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="stmt-part-label">
+                      {partLabel(det)}
+                      {det?.usage && (
+                        <span style={{ marginLeft: 8 }}><UsageBadge usage={det.usage} /></span>
+                      )}
+                    </div>
+                    <div className="stmt-part-meta">
+                      {part.imported ? (
+                        <span style={{ color: "var(--green-dark)" }}>
+                          <strong>{part.nbImported}</strong> importée(s)
+                          {resolvedAcc ? ` → ${resolvedAcc.libelle}` : ""}
+                        </span>
+                      ) : (
+                        <><strong>{part.nbRows}</strong> opération(s) — à rattacher</>
+                      )}
+                    </div>
+                  </div>
+
+                  {part.imported ? (
+                    <CheckCircle2 size={18} style={{ color: "var(--green)", flexShrink: 0 }} />
+                  ) : (
+                    <div className="rl-select-wrap">
+                      <select
+                        className="rl-select"
+                        value={creating ? CREATE : ""}
+                        onChange={(e) => onAssign(part, e.target.value)}
+                      >
+                        <option value="">Rattacher à un compte…</option>
+                        {accounts.map((a) => (
+                          <option key={a.id} value={a.id}>{accLabel(a)}</option>
+                        ))}
+                        {canCreate && (
+                          <option value={CREATE}>
+                            ＋ Créer « {det?.banque || "compte"}{det?.iban ? ` …${iban4(det.iban)}` : ""} »
+                          </option>
+                        )}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {creating && (
+                  <div className="filecard-create">
+                    <span className="muted" style={{ fontSize: 12.5 }}>
+                      Nouveau compte « {det?.banque || "Banque"}{det?.iban ? ` …${iban4(det.iban)}` : ""} » →
+                    </span>
+                    <div className="rl-select-wrap">
+                      <select className="rl-select" value={newEntityId} onChange={(e) => onSetNewEntity(e.target.value)}>
+                        <option value="">Entité de rattachement…</option>
+                        {entities.map((en) => (
+                          <option key={en.id} value={en.id}>{en.denomination}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <button className="btn secondary" disabled={!newEntityId} onClick={() => onCreateAccount(part)}>
+                      <Plus />
+                      Créer et importer
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

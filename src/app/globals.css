@@ -720,6 +720,86 @@ table.grid select {
   text-decoration: underline;
 }
 
+/* Comptes détectés dans un relevé (multi-comptes) */
+.stmt-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.stmt-part {
+  background: #f8faf8;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.stmt-part-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.stmt-part-icon {
+  display: flex;
+  color: var(--green);
+  flex-shrink: 0;
+}
+.stmt-part-label {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stmt-part-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+/* Select à la charte Regularlog (chevron custom, focus vert) */
+.rl-select-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.rl-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--green);
+  border-bottom: 2px solid var(--green);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+select.rl-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  max-width: 340px;
+  padding: 9px 34px 9px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+select.rl-select:hover {
+  border-color: var(--accent);
+  background: #fbfdfb;
+}
+select.rl-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(144, 197, 122, 0.25);
+}
+
 /* pastille « compte détecté » */
 .detected-acc {
   display: inline-flex;

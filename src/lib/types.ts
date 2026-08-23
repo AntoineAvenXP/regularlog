@@ -203,6 +203,31 @@ export type StatementStatus =
   | "empty" // aucune opération détectée
   | "error";
 
+export interface DetectedAccount {
+  banque: string | null;
+  iban: string | null;
+  titulaire: string | null;
+  periode: string | null;
+  usage: Usage | null;
+}
+
+export type StatementRow = { date: string | null; libelle: string; montant: number | null };
+
+/**
+ * Un compte détecté DANS un relevé. Un même fichier peut en contenir plusieurs
+ * (numéros/IBAN différents) → chaque compte est rattaché et importé séparément.
+ */
+export interface StatementPart {
+  key: string; // clé de regroupement (numéro de compte normalisé)
+  detected: DetectedAccount | null;
+  rows?: StatementRow[]; // opérations en attente d'import (vidées une fois importées)
+  nbRows: number;
+  resolvedAccountId?: string | null;
+  importId?: string | null; // lot d'import lié → suppression en cascade
+  nbImported?: number;
+  imported?: boolean;
+}
+
 export interface Statement {
   id: string;
   ownerUid: string;
@@ -211,20 +236,16 @@ export interface Statement {
   storagePath: string;
   status: StatementStatus;
   error?: string | null;
-  detected?: {
-    banque: string | null;
-    iban: string | null;
-    titulaire: string | null;
-    periode: string | null;
-    usage: Usage | null;
-  } | null;
-  resolvedAccountId?: string | null;
-  importId?: string | null; // lot d'import lié → suppression en cascade des tx
-  // Opérations extraites en attente d'import (vidées une fois importées).
-  rows?: { date: string | null; libelle: string; montant: number | null }[];
-  nbRows?: number;
-  nbImported?: number;
+  parts?: StatementPart[]; // un ou plusieurs comptes détectés dans le fichier
+  nbRows?: number; // total opérations détectées (tous comptes)
   createdAt?: unknown;
+
+  // --- Champs hérités (relevés créés avant le multi-comptes) — lecture seule.
+  detected?: DetectedAccount | null;
+  resolvedAccountId?: string | null;
+  importId?: string | null;
+  rows?: StatementRow[];
+  nbImported?: number;
 }
 
 export type ImportKind = "csv" | "excel" | "pdf" | "ocr" | "bridge";

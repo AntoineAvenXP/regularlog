@@ -31,9 +31,17 @@ const PROMPT =
   "Réponds UNIQUEMENT par un objet JSON strict, sans aucun texte autour, au format :\n" +
   '{"compte":{"banque":"texte|null","iban":"texte|null","titulaire":"texte|null","periode":"AAAA-MM|null","usage":"pro|perso|null"},' +
   '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre}]}\n' +
+  "IMPORTANT — plusieurs comptes possibles : un même document (ou une même page) " +
+  "peut concerner PLUSIEURS comptes bancaires différents. Repère-les grâce à leur " +
+  "NUMÉRO DE COMPTE / IBAN. Le champ \"compte\" doit décrire le compte auquel " +
+  "appartiennent les opérations que tu renvoies pour CETTE page. Si les opérations " +
+  "de la page changent de compte, renvoie le compte le plus représentatif et veille " +
+  "à toujours reporter son numéro/IBAN. Reporte TOUJOURS le numéro/IBAN quand il est " +
+  "visible, même partiel : c'est lui qui permet de distinguer les comptes.\n" +
   "Règles pour \"compte\" :\n" +
   "- banque = nom de la banque émettrice du relevé (ex. Qonto, BNP Paribas, Crédit Agricole).\n" +
-  "- iban = IBAN du compte tel qu'imprimé (complet ou partiel), sinon null.\n" +
+  "- iban = IBAN ou numéro de compte tel qu'imprimé (complet ou partiel), sinon null. " +
+  "Ne l'invente jamais ; recopie-le exactement.\n" +
   "- titulaire = nom du titulaire du compte, sinon null.\n" +
   "- periode = mois principal du relevé au format AAAA-MM, sinon null.\n" +
   "- usage = \"pro\" si le compte est professionnel (titulaire = société / entreprise, " +

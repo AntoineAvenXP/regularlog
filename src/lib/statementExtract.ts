@@ -4,9 +4,27 @@
 
 import {
   extractStatementImage,
-  type AiExtractResult,
+  type AiDetectedAccount,
   type AiStatementRow,
 } from "./aiExtract";
+
+/** Un compte détecté dans le relevé + ses opérations (regroupées par n° de compte). */
+export interface StatementGroup {
+  account: AiDetectedAccount | null;
+  rows: AiStatementRow[];
+}
+
+export interface StatementExtractResult {
+  groups: StatementGroup[];
+  truncated: boolean;
+}
+
+/** Clé de compte = caractères alphanumériques de l'IBAN/numéro (ou null). */
+function acctKey(iban?: string | null): string | null {
+  if (!iban) return null;
+  const d = iban.replace(/[^a-z0-9]/gi, "").toUpperCase();
+  return d.length >= 4 ? d : null;
+}
 
 const CONCURRENCY = 4; // pages lues simultanément
 const TARGET_PX = 1600; // plus grand côté d'une page rendue (lisible pour l'IA)
@@ -130,13 +148,16 @@ async function mapLimit<T, R>(
 }
 
 /**
- * Lit des images de page déjà rendues : lecture IA parallèle → fusion.
+ * Lit des images de page déjà rendues : lecture IA parallèle → REGROUPEMENT PAR
+ * COMPTE. Un relevé peut contenir plusieurs comptes (numéros différents) : les
+ * opérations sont réparties selon le n° de compte détecté sur chaque page ; une
+ * page sans n° hérite du compte de la page précédente.
  * `onProgress(done, total)` suit l'avancement des pages.
  */
 export async function extractFromImages(
   pages: string[],
   onProgress?: (done: number, total: number) => void
-): Promise<AiExtractResult> {
+): Promise<StatementExtractResult> {
   const total = pages.length;
   let done = 0;
 
@@ -147,12 +168,31 @@ export async function extractFromImages(
     return r;
   });
 
-  // Fusion : compte détecté = 1re page qui porte une info ; opérations concaténées.
-  const account =
-    perPage.map((r) => r.account).find((a) => a && (a.banque || a.iban || a.titulaire)) ??
-    perPage.find((r) => r.account)?.account ??
-    null;
-  const rows: AiStatementRow[] = perPage.flatMap((r) => r.rows);
+  const groups: StatementGroup[] = [];
+  const byKey = new Map<string, StatementGroup>();
+  const UNKNOWN = "__unknown__";
+  let currentKey: string | null = null;
+
+  for (const r of perPage) {
+    const key = acctKey(r.account?.iban);
+    let target: string;
+    if (key) {
+      target = key;
+      currentKey = key;
+    } else {
+      target = currentKey ?? UNKNOWN;
+    }
+    let g = byKey.get(target);
+    if (!g) {
+      g = { account: r.account ?? null, rows: [] };
+      byKey.set(target, g);
+      groups.push(g);
+    } else if (!g.account && r.account) {
+      g.account = r.account;
+    }
+    g.rows.push(...r.rows);
+  }
+
   const truncated = perPage.some((r) => r.truncated);
-  return { account, rows, truncated };
+  return { groups, truncated };
 }
