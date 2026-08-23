@@ -23,12 +23,39 @@ export interface AiExtractResult {
   truncated: boolean;
 }
 
+function normalizeResult(data: unknown): AiExtractResult {
+  const d = (data ?? {}) as AiExtractResult;
+  return {
+    account: d.account ?? null,
+    rows: Array.isArray(d.rows) ? d.rows : [],
+    truncated: !!d.truncated,
+  };
+}
+
 /**
- * Extrait un relevé déjà déposé dans Storage. On envoie l'URL de téléchargement
- * (pas les octets) : le corps de requête reste minuscule et on évite la limite
- * Vercel de 4,5 Mo (erreur 413). Le serveur télécharge le fichier lui-même.
+ * Lit UNE image de page de relevé (base64 sans préfixe). Appel court et léger :
+ * le découpage du PDF en pages + le parallélisme sont gérés par
+ * lib/statementExtract. Corps de requête minuscule → pas de limite 413.
  */
-export async function extractStatementAI(
+export async function extractStatementImage(
+  base64: string,
+  mediaType: string
+): Promise<AiExtractResult> {
+  const res = await fetch("/api/extract-statement", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: base64, mediaType }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = (data as { error?: string }).error || `Erreur ${res.status}`;
+    throw new Error(msg);
+  }
+  return normalizeResult(data);
+}
+
+/** Repli : lecture d'un fichier via son URL Storage (téléchargé côté serveur). */
+export async function extractStatementByUrl(
   fileDownloadUrl: string,
   fileName: string
 ): Promise<AiExtractResult> {
@@ -37,16 +64,10 @@ export async function extractStatementAI(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url: fileDownloadUrl, name: fileName }),
   });
-
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = (data as { error?: string }).error || `Erreur ${res.status}`;
     throw new Error(msg);
   }
-  const d = data as AiExtractResult;
-  return {
-    account: d.account ?? null,
-    rows: Array.isArray(d.rows) ? d.rows : [],
-    truncated: !!d.truncated,
-  };
+  return normalizeResult(data);
 }

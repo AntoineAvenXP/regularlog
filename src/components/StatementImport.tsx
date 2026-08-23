@@ -18,12 +18,12 @@ import {
 } from "lucide-react";
 import { SectionHeader } from "@/components/PageHeader";
 import { COL, createOwned, deleteOwned, listOwned, updateOwned } from "@/lib/db";
-import { extractStatementAI } from "@/lib/aiExtract";
+import { extractStatement } from "@/lib/statementExtract";
 import { fingerprint, parseDate } from "@/lib/parsing";
 import { hashFile, weakKey, writeImport, type TxDraft } from "@/lib/importWrite";
 import {
   deleteFile,
-  fileUrl,
+  getFileBytes,
   isPdf,
   statementPath,
   uploadFileResumable,
@@ -52,6 +52,16 @@ const iban4 = (iban?: string | null): string | null => {
   return digits.length >= 4 ? digits.slice(-4) : null;
 };
 
+function mimeOf(name: string): string {
+  if (isPdf(name)) return "application/pdf";
+  const ext = name.split(".").pop()?.toLowerCase();
+  if (ext === "png") return "image/png";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  return "application/octet-stream";
+}
+
 /**
  * Import de relevés par l'IA — PERSISTANT et PROGRESSIF.
  * Chaque fichier déposé est conservé dans Storage + suivi dans Firestore
@@ -73,6 +83,7 @@ export default function StatementImport({
   onAccountsChanged: (newAccountId?: string) => void;
 }) {
   const [statements, setStatements] = useState<Statement[]>([]);
+  const [progress, setProgress] = useState<Record<string, { done: number; total: number }>>({});
   const [drag, setDrag] = useState(false);
   const [rejected, setRejected] = useState<string[]>([]);
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
@@ -189,9 +200,21 @@ export default function StatementImport({
   const processStatement = useCallback(
     async (st: Statement) => {
       try {
-        // On envoie l'URL Storage à la route (pas les octets) → pas de limite 413.
-        const url = await fileUrl(st.storagePath);
-        const { account, rows } = await extractStatementAI(url, st.fileName);
+        // Fichier en mémoire (session) sinon rechargé depuis Storage.
+        let file = filesRef.current.get(st.id);
+        if (!file) {
+          const bytes = await getFileBytes(st.storagePath);
+          file = new File([bytes], st.fileName, { type: mimeOf(st.fileName) });
+        }
+        // Découpe en pages + lecture IA parallèle (rapide, sans timeout).
+        const { account, rows } = await extractStatement(file, (done, total) =>
+          setProgress((p) => ({ ...p, [st.id]: { done, total } }))
+        );
+        setProgress((p) => {
+          const n = { ...p };
+          delete n[st.id];
+          return n;
+        });
         const detected = account
           ? {
               banque: account.banque,
@@ -525,6 +548,7 @@ export default function StatementImport({
             <StatementRow
               key={st.id}
               st={st}
+              progress={progress[st.id]}
               accounts={accounts}
               entities={entities}
               accLabel={accLabel}
@@ -563,6 +587,7 @@ function statusIcon(s: Statement["status"]) {
 
 function StatementRow({
   st,
+  progress,
   accounts,
   entities,
   accLabel,
@@ -575,6 +600,7 @@ function StatementRow({
   onRemove,
 }: {
   st: Statement;
+  progress?: { done: number; total: number };
   accounts: BankAccount[];
   entities: Entity[];
   accLabel: (a: BankAccount) => string;
@@ -609,7 +635,10 @@ function StatementRow({
             )}
           </div>
           <div className="filecard-meta">
-            {st.status === "processing" && "Envoi et lecture par l'IA…"}
+            {st.status === "processing" &&
+              (progress
+                ? `Lecture IA — page ${progress.done}/${progress.total}…`
+                : "Envoi et lecture par l'IA…")}
             {st.status === "empty" && (
               <span style={{ color: "var(--amber)" }}>
                 Aucune opération détectée (ce fichier n&apos;est peut-être pas un relevé bancaire).

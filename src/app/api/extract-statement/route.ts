@@ -5,7 +5,9 @@ import { NextRequest, NextResponse } from "next/server";
 // JAMAIS exposée au navigateur. Aucune dépendance à Cloud Functions / facturation
 // Google — c'est l'API Anthropic qui est facturée (compte Anthropic).
 export const runtime = "nodejs";
-export const maxDuration = 120;
+// Une page à la fois (le PDF est découpé côté client) → appels courts et
+// parallèles. 60 s est large et compatible tous plans Vercel.
+export const maxDuration = 60;
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
 
@@ -54,72 +56,82 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // On reçoit l'URL du fichier (déjà dans Storage), PAS ses octets : le corps de
-  // requête reste minuscule et on évite la limite Vercel de 4,5 Mo (erreur 413).
-  // Le fichier est téléchargé ici, côté serveur, avant l'appel à l'IA.
+  // Deux modes d'entrée (corps toujours minuscule → pas de limite 413) :
+  //  - { image, mediaType } : UNE image de page déjà rendue côté client (mode
+  //    rapide : le PDF est découpé en pages et lu page par page, en parallèle).
+  //  - { url, name } : le fichier dans Storage, téléchargé ici (repli).
   let url = "";
   let name = "";
+  let image = "";
+  let mediaTypeIn = "";
   try {
-    const body = (await req.json()) as { url?: string; name?: string };
+    const body = (await req.json()) as {
+      url?: string;
+      name?: string;
+      image?: string;
+      mediaType?: string;
+    };
     url = typeof body.url === "string" ? body.url : "";
     name = typeof body.name === "string" ? body.name : "";
+    image = typeof body.image === "string" ? body.image : "";
+    mediaTypeIn = typeof body.mediaType === "string" ? body.mediaType : "";
   } catch {
     return NextResponse.json({ error: "Requête invalide." }, { status: 400 });
   }
-  if (!url) {
-    return NextResponse.json({ error: "URL du fichier manquante." }, { status: 400 });
-  }
-
-  let buf: Buffer;
-  let contentType = "";
-  try {
-    const r = await fetch(url);
-    if (!r.ok) {
-      return NextResponse.json(
-        { error: `Téléchargement du fichier impossible (HTTP ${r.status}).` },
-        { status: 502 }
-      );
-    }
-    contentType = r.headers.get("content-type") || "";
-    buf = Buffer.from(await r.arrayBuffer());
-  } catch (e) {
-    return NextResponse.json(
-      { error: "Téléchargement du fichier impossible : " + (e as Error).message },
-      { status: 502 }
-    );
-  }
-
-  const b64 = buf.toString("base64");
-  const isPdf = /\.pdf$/i.test(name) || contentType.includes("application/pdf");
-  const isImage =
-    !isPdf && (/\.(png|jpe?g|gif|webp|bmp)$/i.test(name) || contentType.startsWith("image/"));
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const content: any[] = [];
-  if (isPdf) {
-    content.push({
-      type: "document",
-      source: { type: "base64", media_type: "application/pdf", data: b64 },
-    });
-  } else if (isImage) {
-    const mediaType = contentType.startsWith("image/")
-      ? contentType
-      : /\.png$/i.test(name)
-      ? "image/png"
-      : /\.webp$/i.test(name)
-      ? "image/webp"
-      : /\.gif$/i.test(name)
-      ? "image/gif"
-      : "image/jpeg";
+
+  if (image) {
     content.push({
       type: "image",
-      source: { type: "base64", media_type: mediaType, data: b64 },
+      source: {
+        type: "base64",
+        media_type: mediaTypeIn || "image/jpeg",
+        data: image,
+      },
     });
+  } else if (url) {
+    let buf: Buffer;
+    let contentType = "";
+    try {
+      const r = await fetch(url);
+      if (!r.ok) {
+        return NextResponse.json(
+          { error: `Téléchargement du fichier impossible (HTTP ${r.status}).` },
+          { status: 502 }
+        );
+      }
+      contentType = r.headers.get("content-type") || "";
+      buf = Buffer.from(await r.arrayBuffer());
+    } catch (e) {
+      return NextResponse.json(
+        { error: "Téléchargement du fichier impossible : " + (e as Error).message },
+        { status: 502 }
+      );
+    }
+    const b64 = buf.toString("base64");
+    const isPdf = /\.pdf$/i.test(name) || contentType.includes("application/pdf");
+    if (isPdf) {
+      content.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: b64 },
+      });
+    } else {
+      const mediaType = contentType.startsWith("image/")
+        ? contentType
+        : /\.png$/i.test(name)
+        ? "image/png"
+        : /\.webp$/i.test(name)
+        ? "image/webp"
+        : "image/jpeg";
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: mediaType, data: b64 },
+      });
+    }
   } else {
-    return NextResponse.json(
-      { error: "Format non supporté (PDF ou image uniquement)." },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Aucun fichier fourni." }, { status: 400 });
   }
   content.push({ type: "text", text: PROMPT });
 
