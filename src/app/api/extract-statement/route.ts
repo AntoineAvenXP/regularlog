@@ -54,20 +54,45 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let file: File | null = null;
+  // On reçoit l'URL du fichier (déjà dans Storage), PAS ses octets : le corps de
+  // requête reste minuscule et on évite la limite Vercel de 4,5 Mo (erreur 413).
+  // Le fichier est téléchargé ici, côté serveur, avant l'appel à l'IA.
+  let url = "";
+  let name = "";
   try {
-    const form = await req.formData();
-    file = form.get("file") as File | null;
+    const body = (await req.json()) as { url?: string; name?: string };
+    url = typeof body.url === "string" ? body.url : "";
+    name = typeof body.name === "string" ? body.name : "";
   } catch {
     return NextResponse.json({ error: "Requête invalide." }, { status: 400 });
   }
-  if (!file) {
-    return NextResponse.json({ error: "Aucun fichier reçu." }, { status: 400 });
+  if (!url) {
+    return NextResponse.json({ error: "URL du fichier manquante." }, { status: 400 });
   }
 
-  const buf = Buffer.from(await file.arrayBuffer());
+  let buf: Buffer;
+  let contentType = "";
+  try {
+    const r = await fetch(url);
+    if (!r.ok) {
+      return NextResponse.json(
+        { error: `Téléchargement du fichier impossible (HTTP ${r.status}).` },
+        { status: 502 }
+      );
+    }
+    contentType = r.headers.get("content-type") || "";
+    buf = Buffer.from(await r.arrayBuffer());
+  } catch (e) {
+    return NextResponse.json(
+      { error: "Téléchargement du fichier impossible : " + (e as Error).message },
+      { status: 502 }
+    );
+  }
+
   const b64 = buf.toString("base64");
-  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  const isPdf = /\.pdf$/i.test(name) || contentType.includes("application/pdf");
+  const isImage =
+    !isPdf && (/\.(png|jpe?g|gif|webp|bmp)$/i.test(name) || contentType.startsWith("image/"));
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const content: any[] = [];
@@ -76,10 +101,19 @@ export async function POST(req: NextRequest) {
       type: "document",
       source: { type: "base64", media_type: "application/pdf", data: b64 },
     });
-  } else if (file.type.startsWith("image/")) {
+  } else if (isImage) {
+    const mediaType = contentType.startsWith("image/")
+      ? contentType
+      : /\.png$/i.test(name)
+      ? "image/png"
+      : /\.webp$/i.test(name)
+      ? "image/webp"
+      : /\.gif$/i.test(name)
+      ? "image/gif"
+      : "image/jpeg";
     content.push({
       type: "image",
-      source: { type: "base64", media_type: file.type, data: b64 },
+      source: { type: "base64", media_type: mediaType, data: b64 },
     });
   } else {
     return NextResponse.json(

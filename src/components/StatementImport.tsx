@@ -23,7 +23,7 @@ import { fingerprint, parseDate } from "@/lib/parsing";
 import { hashFile, weakKey, writeImport, type TxDraft } from "@/lib/importWrite";
 import {
   deleteFile,
-  getFileBytes,
+  fileUrl,
   isPdf,
   statementPath,
   uploadFile,
@@ -51,16 +51,6 @@ const iban4 = (iban?: string | null): string | null => {
   const digits = iban.replace(/\s/g, "");
   return digits.length >= 4 ? digits.slice(-4) : null;
 };
-
-function mimeOf(name: string): string {
-  if (isPdf(name)) return "application/pdf";
-  const ext = name.split(".").pop()?.toLowerCase();
-  if (ext === "png") return "image/png";
-  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
-  if (ext === "webp") return "image/webp";
-  if (ext === "gif") return "image/gif";
-  return "application/octet-stream";
-}
 
 /**
  * Import de relevés par l'IA — PERSISTANT et PROGRESSIF.
@@ -194,14 +184,11 @@ export default function StatementImport({
 
   // ---- Traitement IA d'un relevé (lecture + auto-import si compte résolu).
   const processStatement = useCallback(
-    async (st: Statement, providedFile?: File) => {
+    async (st: Statement) => {
       try {
-        let file = providedFile;
-        if (!file) {
-          const bytes = await getFileBytes(st.storagePath);
-          file = new File([bytes], st.fileName, { type: mimeOf(st.fileName) });
-        }
-        const { account, rows } = await extractStatementAI(file);
+        // On envoie l'URL Storage à la route (pas les octets) → pas de limite 413.
+        const url = await fileUrl(st.storagePath);
+        const { account, rows } = await extractStatementAI(url, st.fileName);
         const detected = account
           ? {
               banque: account.banque,
@@ -253,7 +240,7 @@ export default function StatementImport({
   );
 
   // ---- File de traitement séquentielle (un relevé à la fois).
-  const queueRef = useRef<{ id: string; file?: File }[]>([]);
+  const queueRef = useRef<string[]>([]);
   const runningRef = useRef(false);
   const [working, setWorking] = useState(false);
 
@@ -263,10 +250,10 @@ export default function StatementImport({
     setWorking(true);
     try {
       while (queueRef.current.length) {
-        const next = queueRef.current.shift()!;
-        const st = (await listOwned<Statement>(COL.statements)).find((s) => s.id === next.id);
+        const id = queueRef.current.shift()!;
         // On relit le doc pour partir d'un état frais ; sinon on saute.
-        if (st) await processStatement(st, next.file);
+        const st = (await listOwned<Statement>(COL.statements)).find((s) => s.id === id);
+        if (st) await processStatement(st);
       }
     } finally {
       runningRef.current = false;
@@ -275,8 +262,8 @@ export default function StatementImport({
   }, [processStatement]);
 
   const enqueue = useCallback(
-    (items: { id: string; file?: File }[]) => {
-      queueRef.current.push(...items);
+    (ids: string[]) => {
+      queueRef.current.push(...ids);
       void drain();
     },
     [drain]
@@ -287,7 +274,7 @@ export default function StatementImport({
     (async () => {
       const list = await load();
       const toResume = list.filter((s) => s.status === "processing");
-      if (toResume.length) enqueue(toResume.map((s) => ({ id: s.id })));
+      if (toResume.length) enqueue(toResume.map((s) => s.id));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -307,7 +294,7 @@ export default function StatementImport({
         ...(statements.map((s) => s.fileHash).filter(Boolean) as string[]),
       ]);
       const rej: string[] = [];
-      const toProcess: { id: string; file: File }[] = [];
+      const toProcess: string[] = [];
 
       for (const file of accepted) {
         let hash: string | undefined;
@@ -349,7 +336,7 @@ export default function StatementImport({
           nbImported: 0,
         };
         setStatements((prev) => [st, ...prev]);
-        toProcess.push({ id, file });
+        toProcess.push(id);
       }
       setRejected(rej);
       if (toProcess.length) enqueue(toProcess);
@@ -397,7 +384,7 @@ export default function StatementImport({
   async function retry(st: Statement) {
     await updateOwned(COL.statements, st.id, { status: "processing", error: null });
     patch(st.id, { status: "processing", error: null });
-    enqueue([{ id: st.id }]);
+    enqueue([st.id]);
   }
 
   async function remove(st: Statement) {

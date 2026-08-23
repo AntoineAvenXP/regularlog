@@ -23,13 +23,19 @@ export interface AiExtractResult {
   truncated: boolean;
 }
 
-export async function extractStatementAI(file: File): Promise<AiExtractResult> {
-  const form = new FormData();
-  form.append("file", file);
-
+/**
+ * Extrait un relevé déjà déposé dans Storage. On envoie l'URL de téléchargement
+ * (pas les octets) : le corps de requête reste minuscule et on évite la limite
+ * Vercel de 4,5 Mo (erreur 413). Le serveur télécharge le fichier lui-même.
+ */
+export async function extractStatementAI(
+  fileDownloadUrl: string,
+  fileName: string
+): Promise<AiExtractResult> {
   const res = await fetch("/api/extract-statement", {
     method: "POST",
-    body: form,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: fileDownloadUrl, name: fileName }),
   });
 
   const data = await res.json().catch(() => ({}));
