@@ -1,6 +1,6 @@
 // Extraction IA d'un relevé (PDF/image) via la route serveur locale.
 // Remplace Tesseract + parseStatementText : Claude lit le document et renvoie
-// directement les lignes structurées (date / libellé / montant signé).
+// directement le compte détecté + les lignes structurées (date / libellé / montant signé).
 
 export interface AiStatementRow {
   date: string | null;
@@ -8,7 +8,16 @@ export interface AiStatementRow {
   montant: number | null;
 }
 
+/** Compte détecté sur le relevé (sert à rattacher automatiquement). */
+export interface AiDetectedAccount {
+  banque: string | null;
+  iban: string | null;
+  titulaire: string | null;
+  periode: string | null;
+}
+
 export interface AiExtractResult {
+  account: AiDetectedAccount | null;
   rows: AiStatementRow[];
   truncated: boolean;
 }
@@ -27,8 +36,10 @@ export async function extractStatementAI(file: File): Promise<AiExtractResult> {
     const msg = (data as { error?: string }).error || `Erreur ${res.status}`;
     throw new Error(msg);
   }
+  const d = data as AiExtractResult;
   return {
-    rows: Array.isArray((data as AiExtractResult).rows) ? (data as AiExtractResult).rows : [],
-    truncated: !!(data as AiExtractResult).truncated,
+    account: d.account ?? null,
+    rows: Array.isArray(d.rows) ? d.rows : [],
+    truncated: !!d.truncated,
   };
 }

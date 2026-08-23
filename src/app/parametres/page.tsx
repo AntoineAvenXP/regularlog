@@ -1,12 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { httpsCallable } from "firebase/functions";
-import { Building2, Landmark, BookText, Cable } from "lucide-react";
+import { Building2, Landmark, BookText } from "lucide-react";
 import Shell from "@/components/Shell";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
-import { COL, createOwned, deleteOwned, listOwned, updateOwned } from "@/lib/db";
-import { functions } from "@/lib/firebase";
+import { COL, createOwned, deleteOwned, listOwned } from "@/lib/db";
 import type { AccountingCode, BankAccount, Entity } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
 
@@ -257,144 +255,10 @@ function Parametres() {
         </div>
       </section>
 
-      <BridgeSection entities={entities} accounts={accounts} onReload={reload} />
-    </div>
-  );
-}
-
-// -------- Connexion bancaire Bridge (T6) --------
-function BridgeSection({
-  entities,
-  accounts,
-  onReload,
-}: {
-  entities: Entity[];
-  accounts: BankAccount[];
-  onReload: () => void;
-}) {
-  const [bridgeAccounts, setBridgeAccounts] = useState<
-    { id: string; name: string; iban: string | null }[] | null
-  >(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const linkedIds = new Set(accounts.map((a) => a.bridgeAccountId).filter(Boolean) as string[]);
-
-  async function connect() {
-    setBusy("connect");
-    setMsg(null);
-    try {
-      const fn = httpsCallable<unknown, { url: string }>(functions, "bridgeConnect");
-      const { data } = await fn({});
-      if (data.url) window.open(data.url, "_blank");
-      else setMsg("Aucune URL de connexion renvoyée.");
-    } catch (e) {
-      setMsg("Erreur Bridge : " + (e as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function loadAccounts() {
-    setBusy("list");
-    setMsg(null);
-    try {
-      const fn = httpsCallable<unknown, { accounts: { id: string; name: string; iban: string | null }[] }>(functions, "bridgeListAccounts");
-      const { data } = await fn({});
-      setBridgeAccounts(data.accounts);
-    } catch (e) {
-      setMsg("Erreur Bridge : " + (e as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function sync() {
-    setBusy("sync");
-    setMsg(null);
-    try {
-      const fn = httpsCallable<unknown, { added: number; skipped: number }>(functions, "bridgeSync");
-      const { data } = await fn({});
-      setMsg(`Synchro terminée : ${data.added} ajoutée(s), ${data.skipped} ignorée(s).`);
-    } catch (e) {
-      setMsg("Erreur Bridge : " + (e as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function linkAccount(b: { id: string; name: string; iban: string | null }, entityId: string) {
-    // Rattache le compte Bridge : soit à un compte existant, soit en créant un.
-    const existingSameEntity = accounts.find((a) => a.entityId === entityId && !a.bridgeAccountId);
-    if (existingSameEntity && window.confirm(`Relier au compte existant « ${existingSameEntity.libelle} » ? (Annuler = créer un nouveau compte)`)) {
-      await updateOwned(COL.accounts, existingSameEntity.id, { bridgeAccountId: b.id, source: "bridge" });
-    } else {
-      await createOwned(COL.accounts, {
-        entityId,
-        banque: b.name,
-        libelle: b.name,
-        ibanPartiel: b.iban ? b.iban.slice(-4) : null,
-        source: "bridge" as const,
-        bridgeAccountId: b.id,
-      });
-    }
-    onReload();
-    setMsg("Compte rattaché.");
-  }
-
-  return (
-    <section className="card" style={{ marginTop: 20 }}>
-      <SectionHeader icon={Cable} title="Connexion bancaire (Bridge)" />
-      <p className="muted" style={{ marginTop: 0, marginBottom: 14, fontSize: 12.5 }}>
-        Remontée automatique des transactions récentes. Les relevés 2024 restent
-        importés manuellement (Bridge ne remonte que les 12-24 derniers mois).
-      </p>
-      <div className="toolbar">
-        <button className="btn dark" onClick={connect} disabled={!!busy}>
-          {busy === "connect" ? "…" : "Connecter mes banques"}
-        </button>
-        <button className="btn secondary" onClick={loadAccounts} disabled={!!busy}>
-          {busy === "list" ? "…" : "Voir mes comptes Bridge"}
-        </button>
-        <button className="btn secondary" onClick={sync} disabled={!!busy}>
-          {busy === "sync" ? "Synchro…" : "Synchroniser maintenant"}
-        </button>
+      <div className="empty" style={{ marginTop: 20 }}>
+        La connexion bancaire (Bridge) a déménagé dans <strong>Imports</strong> :
+        c&apos;est là que tu connectes tes banques et synchronises tes comptes.
       </div>
-      {msg && <p style={{ fontSize: 13 }}>{msg}</p>}
-
-      {bridgeAccounts && (
-        <table className="grid" style={{ maxWidth: 720, marginTop: 8 }}>
-          <thead>
-            <tr><th>Compte Bridge</th><th>IBAN</th><th>Rattachement Regularlog</th></tr>
-          </thead>
-          <tbody>
-            {bridgeAccounts.map((b) => (
-              <tr key={b.id}>
-                <td>{b.name}</td>
-                <td className="muted">{b.iban ?? "—"}</td>
-                <td>
-                  {linkedIds.has(b.id) ? (
-                    <span className="badge rattache">rattaché</span>
-                  ) : (
-                    <select
-                      defaultValue=""
-                      onChange={(e) => e.target.value && linkAccount(b, e.target.value)}
-                    >
-                      <option value="">— rattacher à une entité —</option>
-                      {entities.map((en) => (
-                        <option key={en.id} value={en.id}>{en.denomination}</option>
-                      ))}
-                    </select>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {bridgeAccounts.length === 0 && (
-              <tr><td colSpan={3} className="muted">Aucun compte. Clique d&apos;abord sur « Connecter mes banques ».</td></tr>
-            )}
-          </tbody>
-        </table>
-      )}
-    </section>
+    </div>
   );
 }

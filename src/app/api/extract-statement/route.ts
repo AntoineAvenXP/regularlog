@@ -15,18 +15,31 @@ interface ExtractedRow {
   montant: number | null;
 }
 
+interface DetectedAccount {
+  banque: string | null;
+  iban: string | null; // IBAN complet ou partiel tel qu'imprimé
+  titulaire: string | null;
+  periode: string | null; // ex. "2024-01" ou "janvier 2024"
+}
+
 const PROMPT =
-  "Ce document est un relevé de compte bancaire. Extrais TOUTES les lignes d'opération, " +
-  "sans en oublier ni en inventer.\n" +
-  "Réponds UNIQUEMENT par un tableau JSON strict, sans aucun texte autour, au format :\n" +
-  '[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre}]\n' +
-  "Règles :\n" +
+  "Ce document est un relevé de compte bancaire. Tu dois (1) identifier le compte " +
+  "et (2) extraire TOUTES les lignes d'opération, sans en oublier ni en inventer.\n" +
+  "Réponds UNIQUEMENT par un objet JSON strict, sans aucun texte autour, au format :\n" +
+  '{"compte":{"banque":"texte|null","iban":"texte|null","titulaire":"texte|null","periode":"AAAA-MM|null"},' +
+  '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre}]}\n' +
+  "Règles pour \"compte\" :\n" +
+  "- banque = nom de la banque émettrice du relevé (ex. Qonto, BNP Paribas, Crédit Agricole).\n" +
+  "- iban = IBAN du compte tel qu'imprimé (complet ou partiel), sinon null.\n" +
+  "- titulaire = nom du titulaire du compte, sinon null.\n" +
+  "- periode = mois principal du relevé au format AAAA-MM, sinon null.\n" +
+  "Règles pour \"operations\" :\n" +
   "- date = date d'opération (à défaut date de valeur), format ISO AAAA-MM-JJ.\n" +
   "- libelle = libellé complet de l'opération (bénéficiaire, motif, référence).\n" +
   "- montant = montant signé en euros : NEGATIF pour un débit / retrait / paiement / prélèvement, " +
   "POSITIF pour un crédit / virement reçu / versement. Point décimal, pas de symbole ni de séparateur de milliers.\n" +
   "- Ignore les soldes, totaux, sous-totaux, en-têtes et pieds de page : uniquement les opérations.\n" +
-  "- Si aucune opération n'est lisible, réponds []." ;
+  "- Si aucune opération n'est lisible, renvoie \"operations\":[] (mais remplis \"compte\" si possible)." ;
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -110,7 +123,11 @@ export async function POST(req: NextRequest) {
     .map((c) => (c.type === "text" ? c.text || "" : ""))
     .join("");
 
-  const jsonSlice = text.match(/\[[\s\S]*\]/)?.[0];
+  // Format actuel = objet {compte, operations}. On tolère aussi l'ancien format
+  // (tableau nu d'opérations) au cas où le modèle régresse.
+  const objSlice = text.match(/\{[\s\S]*\}/)?.[0];
+  const arrSlice = text.match(/\[[\s\S]*\]/)?.[0];
+  const jsonSlice = objSlice || arrSlice;
   if (!jsonSlice) {
     return NextResponse.json(
       { error: "Réponse IA illisible.", raw: text.slice(0, 300) },
@@ -127,11 +144,30 @@ export async function POST(req: NextRequest) {
       { status: 502 }
     );
   }
-  if (!Array.isArray(parsed)) {
+
+  let rawRows: unknown[] = [];
+  let account: DetectedAccount | null = null;
+  if (Array.isArray(parsed)) {
+    rawRows = parsed;
+  } else if (parsed && typeof parsed === "object") {
+    const o = parsed as Record<string, unknown>;
+    rawRows = Array.isArray(o.operations) ? o.operations : [];
+    const c = (o.compte || null) as Record<string, unknown> | null;
+    if (c) {
+      const str = (v: unknown) =>
+        typeof v === "string" && v.trim() ? v.trim() : null;
+      account = {
+        banque: str(c.banque),
+        iban: str(c.iban),
+        titulaire: str(c.titulaire),
+        periode: str(c.periode),
+      };
+    }
+  } else {
     return NextResponse.json({ error: "Format IA inattendu." }, { status: 502 });
   }
 
-  const rows: ExtractedRow[] = parsed.map((r) => {
+  const rows: ExtractedRow[] = rawRows.map((r) => {
     const o = (r || {}) as Record<string, unknown>;
     const m = o.montant;
     return {
@@ -144,5 +180,5 @@ export async function POST(req: NextRequest) {
 
   // stop_reason "max_tokens" = relevé trop long, réponse tronquée → on prévient.
   const truncated = data.stop_reason === "max_tokens";
-  return NextResponse.json({ rows, truncated });
+  return NextResponse.json({ account, rows, truncated });
 }
