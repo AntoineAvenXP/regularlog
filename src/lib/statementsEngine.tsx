@@ -162,10 +162,13 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     if (!det) return "";
     const acc = accountsRef.current;
     const four = iban4(det.iban);
+    // Si un IBAN est détecté, on rattache UNIQUEMENT par IBAN : deux comptes de la
+    // même banque (IBAN différents) ne doivent JAMAIS être fusionnés.
     if (four) {
       const byIban = acc.find((a) => iban4(a.ibanPartiel) === four);
-      if (byIban) return byIban.id;
+      return byIban ? byIban.id : "";
     }
+    // Pas d'IBAN détecté → repli prudent par nom de banque.
     if (det.banque) {
       const nb = norm(det.banque);
       if (nb) {

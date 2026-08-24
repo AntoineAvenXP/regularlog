@@ -9,7 +9,10 @@ export const runtime = "nodejs";
 // parallèles. 60 s est large et compatible tous plans Vercel.
 export const maxDuration = 60;
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
+// Opus par défaut pour Regularlog : lecture des scans + analyse fine des libellés
+// (répartition activité/privé) bien meilleure que Haiku. Surchargéable via l'env
+// ANTHROPIC_MODEL (ex. claude-sonnet-5 pour un compromis coût/vitesse).
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-5";
 
 interface ExtractedRow {
   date: string | null;
@@ -122,11 +125,22 @@ function salvage(text: string): { compte: unknown; operations: unknown[] } {
 }
 
 const PROMPT_TAIL =
-  "- affectation = FINALITÉ de l'opération (indépendante du type de compte) : " +
-  '"activite" si la dépense/recette relève de l\'activité professionnelle (achats métier, ' +
-  "fournisseurs, honoraires, ventes, matériel pro), \"prive\" si elle relève de la sphère " +
-  "personnelle (courses, loisirs, restaurant perso, retrait), \"mixte\" si ambigu ou " +
-  "partagé (téléphone, carburant, abonnement à usage mixte). Déduis-le du libellé.\n" +
+  "- affectation = FINALITÉ RÉELLE de l'opération, déduite d'une ANALYSE FINE du libellé " +
+  "(bénéficiaire, mots-clés, type d'opération : VIR / PRLV / CB / retrait), " +
+  "INDÉPENDAMMENT du type de compte :\n" +
+  "    • \"activite\" = lié à l'ACTIVITÉ PROFESSIONNELLE : achats fournisseurs, matériel/logiciels pro, " +
+  "honoraires versés ou reçus, ventes et encaissements clients, cotisations sociales pro " +
+  "(URSSAF, RSI, retraite), TVA, frais bancaires du compte pro, loyer d'un local, sous-traitance.\n" +
+  "    • \"prive\" = SPHÈRE PERSONNELLE : courses, restaurants perso, loisirs, santé, loyer d'habitation, " +
+  "RETRAITS d'espèces, ÉPARGNE, et surtout les VIREMENTS VERS UN COMPTE PERSONNEL du dirigeant " +
+  "(Nickel, Revolut, Boursorama, N26, Livret A, PEL, compte joint) : ces virements sont du SALAIRE / " +
+  "de la rémunération ou de l'épargne — ce N'EST PAS de l'activité. Salaires reçus, allocations, " +
+  "remboursements santé, pensions = prive.\n" +
+  "    • \"mixte\" = réellement partagé ou ambigu : téléphone, internet, carburant, véhicule, " +
+  "abonnements pouvant servir aux deux usages.\n" +
+  "  Analyse en profondeur : un NOM DE PERSONNE (prénom + nom) en bénéficiaire d'un virement est " +
+  "généralement privé (salaire/perso) ; un NOM DE SOCIÉTÉ ou d'enseigne B2B est généralement activité. " +
+  "En cas de doute réel entre activite et prive, choisis \"mixte\" plutôt que de deviner.\n" +
   "- Ignore les soldes, totaux, sous-totaux, en-têtes et pieds de page : uniquement les opérations.\n" +
   "- Si aucune opération n'est lisible, renvoie \"operations\":[] (mais remplis \"compte\" si possible).";
 
