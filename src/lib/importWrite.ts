@@ -29,6 +29,7 @@ export interface TxDraft {
   fp: string;
   categorie?: string | null;
   affectation?: Affectation | null;
+  code?: string | null;
 }
 
 export interface WriteImportParams {
@@ -138,7 +139,7 @@ export async function writeImport(
         montant: p.montant,
         bankOperationId: null,
         fingerprint: p.fp,
-        codeSuggere: null,
+        codeSuggere: p.code ?? null,
         codeValide: null,
         categorie: p.categorie ?? null,
         affectation: p.affectation ?? null,

@@ -25,6 +25,7 @@ import {
 import { fingerprint, parseDate } from "./parsing";
 import { hashFile, weakKey, writeImport, type TxDraft } from "./importWrite";
 import { DEFAULT_CATEGORIES } from "./categories";
+import { detectInternalFlowPairs } from "./internalFlows";
 import {
   deleteFile,
   getFileBytes,
@@ -267,6 +268,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           fp,
           categorie: r.categorie ?? null,
           affectation: r.affectation ?? null,
+          code: r.code ?? null,
         });
         const bId = bridgeWeak.get(weakKey(d, m));
         if (bId) supersede.add(bId);
@@ -307,6 +309,33 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     },
     [patch]
   );
+
+  /**
+   * Détection AUTOMATIQUE des flux internes : après un import, on cherche dans
+   * TOUTES les transactions les virements miroirs (montant opposé, comptes
+   * distincts, dates proches) et on les lie — typiquement une opération d'un
+   * premier relevé qui réapparaît (à l'inverse) dans un second relevé.
+   */
+  const detectAndLinkFlows = useCallback(async () => {
+    const all = await listOwned<Transaction>(COL.transactions);
+    const pairs = detectInternalFlowPairs(all);
+    if (!pairs.length) return;
+    for (let i = 0; i < pairs.length; i += 200) {
+      const chunk = pairs.slice(i, i + 200);
+      const batch = writeBatch(db);
+      for (const p of chunk) {
+        batch.update(doc(db, COL.transactions, p.pos.id), {
+          fluxInterne: true,
+          transactionMiroirId: p.neg.id,
+        });
+        batch.update(doc(db, COL.transactions, p.neg.id), {
+          fluxInterne: true,
+          transactionMiroirId: p.pos.id,
+        });
+      }
+      await batch.commit();
+    }
+  }, []);
 
   /** Importe tous les comptes non encore importés (rattache/crée les comptes). */
   const importAllParts = useCallback(
@@ -375,6 +404,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
             montant: r.montant,
             categorie: r.categorie ?? null,
             affectation: r.affectation ?? null,
+            code: r.code ?? null,
           }));
           const nbRows = cleanRows.filter((r) => r.date && r.montant != null && r.libelle).length;
           if (nbRows === 0) return;
@@ -414,13 +444,15 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
         // Aucun rattachement manuel : chaque compte détecté est rattaché à un
         // compte existant (par IBAN/banque) ou créé automatiquement, puis importé.
         await importAllParts(cur);
+        // Flux internes : dès le 2ᵉ relevé, on relie automatiquement les miroirs.
+        await detectAndLinkFlows();
       } catch (e) {
         const msg = (e as Error).message;
         await updateOwned(COL.statements, st.id, { status: "error", error: msg });
         patch(st.id, { status: "error", error: msg });
       }
     },
-    [importAllParts, patch]
+    [importAllParts, detectAndLinkFlows, patch]
   );
 
   // ---- File de traitement séquentielle (persiste à la navigation).
@@ -440,8 +472,10 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
             st.status === "ready" &&
             (st.parts ?? []).some((p) => !p.imported && (p.rows?.length ?? 0) > 0);
           // « ready » : import déjà scanné → on finit sans ré-appeler l'IA.
-          if (canFinish) await importAllParts(st);
-          else await processStatement(st);
+          if (canFinish) {
+            await importAllParts(st);
+            await detectAndLinkFlows();
+          } else await processStatement(st);
         } catch (e) {
           try {
             await updateOwned(COL.statements, id, { status: "error", error: (e as Error).message });
@@ -454,7 +488,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     } finally {
       runningRef.current = false;
     }
-  }, [processStatement, importAllParts, patch]);
+  }, [processStatement, importAllParts, detectAndLinkFlows, patch]);
 
   const enqueue = useCallback(
     (ids: string[]) => {

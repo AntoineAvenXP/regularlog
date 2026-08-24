@@ -226,6 +226,7 @@ export type StatementRow = {
   montant: number | null;
   categorie?: string | null;
   affectation?: Affectation | null;
+  code?: string | null; // code comptable PCG suggéré
 };
 
 /**

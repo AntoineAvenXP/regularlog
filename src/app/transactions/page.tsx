@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { writeBatch, doc } from "firebase/firestore";
-import { Briefcase, User } from "lucide-react";
+import { Briefcase, User, ArrowLeftRight } from "lucide-react";
 import Shell from "@/components/Shell";
 import { db } from "@/lib/firebase";
 import { COL, createOwned, listOwned, updateOwned } from "@/lib/db";
@@ -102,6 +102,12 @@ function TxTable() {
   const entName = (id: string) => entities.find((e) => e.id === id)?.denomination ?? "—";
   const accName = (id: string) => accounts.find((a) => a.id === id)?.libelle ?? "—";
   const typeById = useMemo(() => entityTypeMap(entities), [entities]);
+  const txById = useMemo(() => new Map(tx.map((t) => [t.id, t])), [tx]);
+  // Compte « en face » d'un flux interne (pour le survol).
+  const mirrorAccountName = (t: Transaction) => {
+    const m = t.transactionMiroirId ? txById.get(t.transactionMiroirId) : null;
+    return m ? accName(m.bankAccountId) : "un autre compte";
+  };
   const accUsageById = useMemo(() => accountUsageMap(accounts), [accounts]);
   const sortedAccounts = useMemo(() => [...accounts].sort(byAccountNumber), [accounts]);
   const selectedAccount = accounts.find((a) => a.id === fAccount) || null;
@@ -486,7 +492,15 @@ function TxTable() {
                 <td style={{ whiteSpace: "normal", maxWidth: 320 }}>
                   {t.libelleBrut}
                   {t.aVerifier && <span className="badge verif" style={{ marginLeft: 6 }}>à vérifier</span>}
-                  {t.fluxInterne && <span className="badge sans_objet" style={{ marginLeft: 6 }}>flux interne</span>}
+                  {t.fluxInterne && (
+                    <span
+                      className="flux-badge"
+                      title={`Flux interne ↔ ${mirrorAccountName(t)}`}
+                      style={{ marginLeft: 6 }}
+                    >
+                      <ArrowLeftRight size={11} /> flux interne
+                    </span>
+                  )}
                 </td>
                 <td style={{ color: t.montant < 0 ? "var(--red)" : "var(--green)" }}>
                   {fmtAmount(t.montant)}
@@ -506,8 +520,9 @@ function TxTable() {
                 </td>
                 <td>
                   <input
-                    defaultValue={t.codeValide ?? ""}
-                    placeholder={t.codeSuggere ? `suggéré : ${t.codeSuggere}` : ""}
+                    defaultValue={t.codeValide ?? t.codeSuggere ?? ""}
+                    placeholder={t.codeSuggere ? `suggéré : ${t.codeSuggere}` : "code"}
+                    title="Code comptable — suggéré par l'IA, modifiable. Transmis au cabinet à titre de suggestion."
                     onBlur={async (e) => {
                       const v = e.target.value.trim() || null;
                       if (v === (t.codeValide ?? null)) return;

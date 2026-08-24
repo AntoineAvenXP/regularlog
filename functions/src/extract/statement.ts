@@ -21,7 +21,7 @@ const PROMPT_HEAD =
   "et (2) extraire TOUTES les lignes d'opération, sans en oublier ni en inventer.\n" +
   "Réponds UNIQUEMENT par un objet JSON strict, sans aucun texte autour, au format :\n" +
   '{"compte":{"banque":"texte|null","iban":"texte|null","titulaire":"texte|null","periode":"AAAA-MM|null","usage":"pro|perso|null"},' +
-  '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre,"categorie":"texte|null","affectation":"activite|prive|mixte"}]}\n' +
+  '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre,"categorie":"texte|null","affectation":"activite|prive|mixte","code":"texte|null"}]}\n' +
   "IMPORTANT — plusieurs comptes possibles : un même document (ou une même page) " +
   "peut concerner PLUSIEURS comptes bancaires différents. Repère-les grâce à leur " +
   "NUMÉRO DE COMPTE / IBAN. Le champ \"compte\" doit décrire le compte auquel " +
@@ -55,6 +55,11 @@ const PROMPT_TAIL =
   "  Analyse en profondeur : un NOM DE PERSONNE en bénéficiaire d'un virement est généralement privé " +
   "(salaire/perso) ; un NOM DE SOCIÉTÉ ou d'enseigne B2B est généralement activité. En cas de doute " +
   "réel entre activite et prive, choisis \"mixte\".\n" +
+  "- code = code comptable français (PCG) SUGGÉRÉ pour l'opération, d'après le libellé. Exemples : " +
+  "607 achats de marchandises, 606 fournitures/énergie, 611 sous-traitance, 613 locations, 616 assurances, " +
+  "6226 honoraires, 625 déplacements, 626 télécom, 627 services bancaires, 641 rémunérations, 645 charges " +
+  "sociales, 706 prestations de services, 707 ventes de marchandises, 44566 TVA déductible, 455 compte " +
+  "courant d'associé. Propose le plus probable ; sinon null. C'est une SUGGESTION, révisable.\n" +
   "- Ignore les soldes, totaux, sous-totaux, en-têtes et pieds de page : uniquement les opérations.\n" +
   "- Si aucune opération n'est lisible, renvoie \"operations\":[] (mais remplis \"compte\" si possible).";
 
@@ -172,6 +177,7 @@ function parseAi(text: string): { account: DetectedAccount | null; rows: unknown
         o.affectation === "activite" || o.affectation === "prive" || o.affectation === "mixte"
           ? o.affectation
           : null,
+      code: typeof o.code === "string" && o.code.trim() ? o.code.trim() : null,
     };
   });
   return { account, rows };

@@ -8,6 +8,7 @@ export interface AiStatementRow {
   montant: number | null;
   categorie?: string | null;
   affectation?: "activite" | "prive" | "mixte" | null;
+  code?: string | null; // code comptable PCG suggéré par l'IA
 }
 
 /** Compte détecté sur le relevé (sert à rattacher automatiquement). */

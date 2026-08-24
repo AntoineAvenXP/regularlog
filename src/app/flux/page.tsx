@@ -7,7 +7,6 @@ import { db } from "@/lib/firebase";
 import { COL, listOwned } from "@/lib/db";
 import type { BankAccount, Entity, Transaction } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
-import { detectInternalFlowPairs, type FlowPair } from "@/lib/internalFlows";
 import { useAuth } from "@/lib/auth";
 
 export default function FluxPage() {
@@ -24,7 +23,6 @@ function Flux() {
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [loading, setLoading] = useState(true);
-  const [candidates, setCandidates] = useState<FlowPair[] | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function reload() {
@@ -45,56 +43,6 @@ function Flux() {
   const accName = (id: string) => accounts.find((a) => a.id === id)?.libelle ?? "—";
   const accEntity = (id: string) => accounts.find((a) => a.id === id)?.entityId ?? "";
   const entName = (id: string) => entities.find((e) => e.id === id)?.denomination ?? "—";
-
-  function detect() {
-    setCandidates(detectInternalFlowPairs(tx));
-  }
-
-  async function link(pos: Transaction, neg: Transaction) {
-    setBusy(true);
-    try {
-      const batch = writeBatch(db);
-      batch.update(doc(db, COL.transactions, pos.id), {
-        fluxInterne: true,
-        transactionMiroirId: neg.id,
-      });
-      batch.update(doc(db, COL.transactions, neg.id), {
-        fluxInterne: true,
-        transactionMiroirId: pos.id,
-      });
-      await batch.commit();
-      await reload();
-      setCandidates((c) => c?.filter((p) => p.pos.id !== pos.id) ?? null);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function linkAll() {
-    if (!candidates || candidates.length === 0) return;
-    setBusy(true);
-    try {
-      for (let i = 0; i < candidates.length; i += 200) {
-        const chunk = candidates.slice(i, i + 200);
-        const batch = writeBatch(db);
-        for (const p of chunk) {
-          batch.update(doc(db, COL.transactions, p.pos.id), {
-            fluxInterne: true,
-            transactionMiroirId: p.neg.id,
-          });
-          batch.update(doc(db, COL.transactions, p.neg.id), {
-            fluxInterne: true,
-            transactionMiroirId: p.pos.id,
-          });
-        }
-        await batch.commit();
-      }
-      await reload();
-      setCandidates([]);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function unlink(a: Transaction) {
     setBusy(true);
@@ -163,61 +111,10 @@ function Flux() {
     <div>
       <h1 className="page">Flux internes</h1>
       <p className="sub">
-        Virements entre tes comptes — ni charges ni produits. À qualifier
-        (compte courant d&apos;associé, rémunération…) via le code dans Transactions.
+        Virements entre tes comptes — ni charges ni produits. Détectés
+        <strong> automatiquement</strong> à chaque import de relevé (une opération
+        d&apos;un compte qui réapparaît, à l&apos;inverse, sur un autre).
       </p>
-
-      <div className="toolbar">
-        <button className="btn" onClick={detect} disabled={busy}>
-          Détecter les flux internes
-        </button>
-        {candidates && candidates.length > 0 && (
-          <button className="btn secondary" onClick={linkAll} disabled={busy}>
-            Tout lier ({candidates.length})
-          </button>
-        )}
-      </div>
-
-      {/* Candidats détectés */}
-      {candidates && (
-        <div style={{ marginBottom: 26 }}>
-          <h2 style={{ fontSize: 15 }}>
-            {candidates.length === 0
-              ? "Aucun nouveau flux interne détecté."
-              : `${candidates.length} paire(s) candidate(s)`}
-          </h2>
-          {candidates.length > 0 && (
-            <table className="grid">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Depuis (débit)</th>
-                  <th>Vers (crédit)</th>
-                  <th>Montant</th>
-                  <th>Écart</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {candidates.map((p) => (
-                  <tr key={p.pos.id}>
-                    <td>{p.neg.dateOperation}</td>
-                    <td>{accName(p.neg.bankAccountId)} <span className="muted">({entName(accEntity(p.neg.bankAccountId))})</span></td>
-                    <td>{accName(p.pos.bankAccountId)} <span className="muted">({entName(accEntity(p.pos.bankAccountId))})</span></td>
-                    <td>{fmtAmount(p.pos.montant)}</td>
-                    <td className="muted">{p.days} j</td>
-                    <td>
-                      <button className="btn" onClick={() => link(p.pos, p.neg)} disabled={busy}>
-                        Lier
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
 
       {/* Cumuls */}
       <div className="row" style={{ gap: 16, marginBottom: 20 }}>
@@ -285,7 +182,7 @@ function Flux() {
           ))}
           {linked.length === 0 && (
             <tr>
-              <td colSpan={5} className="muted">Aucun flux interne lié. Lance la détection ci-dessus.</td>
+              <td colSpan={5} className="muted">Aucun flux interne pour l&apos;instant. Ils apparaîtront dès qu&apos;un virement d&apos;un compte se retrouvera sur un autre relevé importé.</td>
             </tr>
           )}
         </tbody>
