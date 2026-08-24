@@ -226,11 +226,9 @@ function StatementRow({
             <RotateCw size={15} />
           </button>
         )}
-        {st.status !== "processing" && st.status !== "ready" && (
-          <button className="filecard-remove" onClick={onRemove} title="Supprimer">
-            <Trash2 size={15} />
-          </button>
-        )}
+        <button className="filecard-remove" onClick={onRemove} title="Supprimer">
+          <Trash2 size={15} />
+        </button>
       </div>
 
       {showParts && (

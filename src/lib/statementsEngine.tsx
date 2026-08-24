@@ -301,6 +301,21 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     [patch]
   );
 
+  /** Importe tous les comptes non encore importés (rattache/crée les comptes). */
+  const importAllParts = useCallback(
+    async (st: Statement): Promise<Statement> => {
+      let cur = st;
+      for (const p of st.parts ?? []) {
+        if (p.imported) continue;
+        const accountId = await resolveOrCreateAccount(p.detected);
+        cur = await importPart(cur, p.key, accountId);
+      }
+      return cur;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [importPart]
+  );
+
   const processStatement = useCallback(
     async (st: Statement) => {
       try {
@@ -374,23 +389,20 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        let cur: Statement = { ...st, parts, nbRows: totalRows, status: "ready" };
+        const cur: Statement = { ...st, parts, nbRows: totalRows, status: "ready" };
         await updateOwned(COL.statements, st.id, { parts, nbRows: totalRows, status: "ready" });
         patch(st.id, { parts, nbRows: totalRows, status: "ready" });
 
         // Aucun rattachement manuel : chaque compte détecté est rattaché à un
         // compte existant (par IBAN/banque) ou créé automatiquement, puis importé.
-        for (const p of parts) {
-          const accountId = await resolveOrCreateAccount(p.detected);
-          cur = await importPart(cur, p.key, accountId);
-        }
+        await importAllParts(cur);
       } catch (e) {
         const msg = (e as Error).message;
         await updateOwned(COL.statements, st.id, { status: "error", error: msg });
         patch(st.id, { status: "error", error: msg });
       }
     },
-    [autoMatch, importPart, patch]
+    [importAllParts, patch]
   );
 
   // ---- File de traitement séquentielle (persiste à la navigation).
@@ -404,12 +416,27 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
       while (queueRef.current.length) {
         const id = queueRef.current.shift()!;
         const st = (await listOwned<Statement>(COL.statements)).map(normalizeStatement).find((s) => s.id === id);
-        if (st) await processStatement(st);
+        if (!st) continue; // supprimé entre-temps
+        try {
+          const canFinish =
+            st.status === "ready" &&
+            (st.parts ?? []).some((p) => !p.imported && (p.rows?.length ?? 0) > 0);
+          // « ready » : import déjà scanné → on finit sans ré-appeler l'IA.
+          if (canFinish) await importAllParts(st);
+          else await processStatement(st);
+        } catch (e) {
+          try {
+            await updateOwned(COL.statements, id, { status: "error", error: (e as Error).message });
+            patch(id, { status: "error", error: (e as Error).message });
+          } catch {
+            /* doc supprimé pendant le traitement : on ignore */
+          }
+        }
       }
     } finally {
       runningRef.current = false;
     }
-  }, [processStatement]);
+  }, [processStatement, importAllParts, patch]);
 
   const enqueue = useCallback(
     (ids: string[]) => {
@@ -432,7 +459,9 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
       const list = await loadStatements();
       if (cancelled) return;
       setReady(true);
-      const stuck = list.filter((s) => s.status === "processing");
+      // Reprend les traitements interrompus : « processing » (à ré-analyser) ET
+      // « ready » (analysé mais import non terminé).
+      const stuck = list.filter((s) => s.status === "processing" || s.status === "ready");
       if (stuck.length) enqueue(stuck.map((s) => s.id));
     })();
     return () => {
