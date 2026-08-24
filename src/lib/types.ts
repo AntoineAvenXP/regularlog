@@ -25,6 +25,7 @@ export interface BankAccount {
   libelle: string;
   source: AccountSource;
   bridgeAccountId?: string | null;
+  usage?: Usage | null; // TYPE du compte : professionnel ou personnel
   createdAt?: unknown;
 }
 
@@ -42,8 +43,15 @@ export type TransactionOrigin =
   | "bridge"
   | "saisie_manuelle";
 
-/** Usage d'une transaction : professionnel ou personnel (reconstitution). */
+/** Type d'un compte : professionnel ou personnel. */
 export type Usage = "pro" | "perso";
+
+/**
+ * Affectation d'une OPÉRATION (finalité de la dépense/recette), déterminée par
+ * l'IA — distincte du type de compte. Une dépense sur un compte pro peut être
+ * privée, et inversement.
+ */
+export type Affectation = "activite" | "prive" | "mixte";
 
 /** Transaction bancaire. */
 export interface Transaction {
@@ -60,7 +68,8 @@ export interface Transaction {
   codeSuggere?: string | null; // suggéré ≠ validé (§6)
   codeValide?: string | null;
   categorie?: string | null; // catégorie usuelle (nourriture, énergie…)
-  usage?: Usage | null; // override pro/perso ; si absent, déduit de l'entité
+  usage?: Usage | null; // hérité (ancien tag pro/perso par ligne) — remplacé par le type de compte
+  affectation?: Affectation | null; // finalité de l'opération, déterminée par l'IA
   justificatifStatus: JustificatifStatus;
   fluxInterne: boolean; // §7
   transactionMiroirId?: string | null;
@@ -216,6 +225,7 @@ export type StatementRow = {
   libelle: string;
   montant: number | null;
   categorie?: string | null;
+  affectation?: Affectation | null;
 };
 
 /**

@@ -16,6 +16,7 @@ interface ExtractedRow {
   libelle: string;
   montant: number | null;
   categorie: string | null;
+  affectation: "activite" | "prive" | "mixte" | null;
 }
 
 interface DetectedAccount {
@@ -41,7 +42,7 @@ const PROMPT_HEAD =
   "et (2) extraire TOUTES les lignes d'opération, sans en oublier ni en inventer.\n" +
   "Réponds UNIQUEMENT par un objet JSON strict, sans aucun texte autour, au format :\n" +
   '{"compte":{"banque":"texte|null","iban":"texte|null","titulaire":"texte|null","periode":"AAAA-MM|null","usage":"pro|perso|null"},' +
-  '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre,"categorie":"texte|null"}]}\n' +
+  '"operations":[{"date":"AAAA-MM-JJ","libelle":"texte","montant":nombre,"categorie":"texte|null","affectation":"activite|prive|mixte"}]}\n' +
   "IMPORTANT — plusieurs comptes possibles : un même document (ou une même page) " +
   "peut concerner PLUSIEURS comptes bancaires différents. Repère-les grâce à leur " +
   "NUMÉRO DE COMPTE / IBAN. Le champ \"compte\" doit décrire le compte auquel " +
@@ -65,6 +66,11 @@ const PROMPT_HEAD =
   "POSITIF pour un crédit / virement reçu / versement. Point décimal, pas de symbole ni de séparateur de milliers.\n";
 
 const PROMPT_TAIL =
+  "- affectation = FINALITÉ de l'opération (indépendante du type de compte) : " +
+  '"activite" si la dépense/recette relève de l\'activité professionnelle (achats métier, ' +
+  "fournisseurs, honoraires, ventes, matériel pro), \"prive\" si elle relève de la sphère " +
+  "personnelle (courses, loisirs, restaurant perso, retrait), \"mixte\" si ambigu ou " +
+  "partagé (téléphone, carburant, abonnement à usage mixte). Déduis-le du libellé.\n" +
   "- Ignore les soldes, totaux, sous-totaux, en-têtes et pieds de page : uniquement les opérations.\n" +
   "- Si aucune opération n'est lisible, renvoie \"operations\":[] (mais remplis \"compte\" si possible).";
 
@@ -255,6 +261,10 @@ export async function POST(req: NextRequest) {
         m != null && m !== "" && !Number.isNaN(Number(m)) ? Number(m) : null,
       categorie:
         typeof o.categorie === "string" && o.categorie.trim() ? o.categorie.trim() : null,
+      affectation:
+        o.affectation === "activite" || o.affectation === "prive" || o.affectation === "mixte"
+          ? o.affectation
+          : null,
     };
   });
 

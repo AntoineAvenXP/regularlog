@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { writeBatch, doc, collection } from "firebase/firestore";
+import { writeBatch, doc } from "firebase/firestore";
 import { Briefcase, User } from "lucide-react";
 import Shell from "@/components/Shell";
 import { db } from "@/lib/firebase";
 import { COL, createOwned, listOwned, updateOwned } from "@/lib/db";
 import type {
+  Affectation,
   AccountingRule,
   BankAccount,
   Category,
@@ -17,9 +18,24 @@ import type {
 } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
 import { suggestCode, defaultMotifFromLibelle } from "@/lib/rules";
-import { entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
+import {
+  AFFECTATIONS,
+  AFFECTATION_LABEL,
+  accountUsageMap,
+  entityTypeMap,
+  matchesUsage,
+  usageOf,
+} from "@/lib/usage";
 import { useUsageFilter } from "@/lib/usageFilter";
 import { useAuth } from "@/lib/auth";
+
+/** Tri des comptes par numéro (IBAN partiel) puis libellé. */
+function byAccountNumber(a: BankAccount, b: BankAccount): number {
+  const na = a.ibanPartiel ?? "";
+  const nb = b.ibanPartiel ?? "";
+  if (na !== nb) return na < nb ? -1 : 1;
+  return a.libelle.localeCompare(b.libelle);
+}
 
 const JUSTIF_STATUS: JustificatifStatus[] = [
   "manquant",
@@ -50,6 +66,8 @@ function TxTable() {
   // Filtres
   const [fEntity, setFEntity] = useState("");
   const [fAccount, setFAccount] = useState("");
+  // Vrai quand l'utilisateur a explicitement choisi « Tous les comptes » ("").
+  const [allAccountsChosen, setAllAccountsChosen] = useState(false);
   const [fStatus, setFStatus] = useState("");
   const [fOrigine, setFOrigine] = useState("");
   const [fFlux, setFFlux] = useState("");
@@ -84,11 +102,22 @@ function TxTable() {
   const entName = (id: string) => entities.find((e) => e.id === id)?.denomination ?? "—";
   const accName = (id: string) => accounts.find((a) => a.id === id)?.libelle ?? "—";
   const typeById = useMemo(() => entityTypeMap(entities), [entities]);
+  const accUsageById = useMemo(() => accountUsageMap(accounts), [accounts]);
+  const sortedAccounts = useMemo(() => [...accounts].sort(byAccountNumber), [accounts]);
+  const selectedAccount = accounts.find((a) => a.id === fAccount) || null;
+
+  // Par défaut : le PREMIER compte (par numéro). « Tous les comptes » = valeur "".
+  useEffect(() => {
+    if (!loading && fAccount === "" && !allAccountsChosen && sortedAccounts.length > 0) {
+      setFAccount(sortedAccounts[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, sortedAccounts]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     return tx.filter((t) => {
-      if (!matchesUsage(t, mode, typeById)) return false;
+      if (!matchesUsage(t, mode, accUsageById, typeById)) return false;
       if (fEntity && t.entityId !== fEntity) return false;
       if (fAccount && t.bankAccountId !== fAccount) return false;
       if (fStatus && t.justificatifStatus !== fStatus) return false;
@@ -101,7 +130,7 @@ function TxTable() {
       if (s && !(t.libelleBrut || "").toLowerCase().includes(s)) return false;
       return true;
     });
-  }, [tx, mode, typeById, fEntity, fAccount, fStatus, fOrigine, fFlux, fCategorie, fMonth, search]);
+  }, [tx, mode, accUsageById, typeById, fEntity, fAccount, fStatus, fOrigine, fFlux, fCategorie, fMonth, search]);
 
   async function patch(id: string, data: Partial<Transaction>) {
     setTx((prev) => prev.map((t) => (t.id === id ? { ...t, ...data } : t)));
@@ -141,16 +170,21 @@ function TxTable() {
     setSelected(new Set());
   }
 
-  // Bascule pro/perso d'une ligne (override explicite).
-  async function toggleUsage(t: Transaction) {
-    const next: Usage = usageOf(t, typeById) === "pro" ? "perso" : "pro";
-    await patch(t.id, { usage: next });
+  // Bascule Pro/Perso du COMPTE sélectionné (le type du compte, pas la ligne).
+  async function toggleAccountUsage(acc: BankAccount) {
+    const next: Usage = (acc.usage ?? "perso") === "pro" ? "perso" : "pro";
+    setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, usage: next } : a)));
+    await updateOwned(COL.accounts, acc.id, { usage: next });
   }
-  async function applyBulkUsage(u: Usage) {
+  // Affectation d'une opération (finalité IA, corrigeable).
+  async function setAffectation(t: Transaction, aff: Affectation | null) {
+    await patch(t.id, { affectation: aff });
+  }
+  async function applyBulkAffectation(aff: Affectation | null) {
     if (selected.size === 0) return;
     const ids = [...selected];
-    setTx((prev) => prev.map((t) => (selected.has(t.id) ? { ...t, usage: u } : t)));
-    for (const id of ids) await updateOwned(COL.transactions, id, { usage: u });
+    setTx((prev) => prev.map((t) => (selected.has(t.id) ? { ...t, affectation: aff } : t)));
+    for (const id of ids) await updateOwned(COL.transactions, id, { affectation: aff });
   }
   async function applyBulkCategory(cat: string) {
     if (selected.size === 0) return;
@@ -227,7 +261,8 @@ function TxTable() {
       "code_valide",
       "code_suggere",
       "categorie",
-      "usage",
+      "type_compte",
+      "affectation",
       "statut_justificatif",
       "flux_interne",
       "origine",
@@ -251,7 +286,8 @@ function TxTable() {
           t.codeValide ?? "",
           t.codeSuggere ?? "",
           t.categorie ?? "",
-          usageOf(t, typeById),
+          usageOf(t, accUsageById, typeById),
+          t.affectation ? AFFECTATION_LABEL[t.affectation] : "",
           t.justificatifStatus,
           t.fluxInterne ? "oui" : "non",
           t.origine,
@@ -291,12 +327,31 @@ function TxTable() {
             <option key={e.id} value={e.id}>{e.denomination}</option>
           ))}
         </select>
-        <select value={fAccount} onChange={(e) => setFAccount(e.target.value)}>
-          <option value="">Tous comptes</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>{a.libelle}</option>
+        <select
+          value={fAccount}
+          onChange={(e) => {
+            setFAccount(e.target.value);
+            setAllAccountsChosen(e.target.value === "");
+          }}
+        >
+          <option value="">Tous les comptes</option>
+          {sortedAccounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.libelle}{a.ibanPartiel ? ` · …${a.ibanPartiel}` : ""}
+            </option>
           ))}
         </select>
+        {selectedAccount && (
+          <button
+            className="usage-pill"
+            data-usage={selectedAccount.usage ?? "perso"}
+            onClick={() => toggleAccountUsage(selectedAccount)}
+            title="Type du compte — cliquer pour basculer Pro / Perso"
+          >
+            {(selectedAccount.usage ?? "perso") === "pro" ? <Briefcase size={12} /> : <User size={12} />}
+            Compte {(selectedAccount.usage ?? "perso") === "pro" ? "Pro" : "Perso"}
+          </button>
+        )}
         <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
           <option value="">Tout justificatif</option>
           {JUSTIF_STATUS.map((s) => (
@@ -374,12 +429,21 @@ function TxTable() {
               <option key={c.id} value={c.nom}>{c.nom}</option>
             ))}
           </select>
-          <button className="btn secondary" onClick={() => applyBulkUsage("pro")}>
-            <Briefcase size={14} /> Pro
-          </button>
-          <button className="btn secondary" onClick={() => applyBulkUsage("perso")}>
-            <User size={14} /> Perso
-          </button>
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              if (e.target.value)
+                applyBulkAffectation(e.target.value === "__clear__" ? null : (e.target.value as Affectation));
+              e.target.value = "";
+            }}
+            style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8 }}
+          >
+            <option value="">Affectation…</option>
+            <option value="__clear__">— aucune —</option>
+            {AFFECTATIONS.map((a) => (
+              <option key={a} value={a}>{AFFECTATION_LABEL[a]}</option>
+            ))}
+          </select>
           <button className="btn danger" onClick={markLost}>Marquer « perdu »</button>
           <button className="btn secondary" onClick={() => setSelected(new Set())}>Désélectionner</button>
         </div>
@@ -400,7 +464,7 @@ function TxTable() {
               <th>Compte</th>
               <th>Libellé</th>
               <th>Montant</th>
-              <th>Pro/Perso</th>
+              <th>Affectation</th>
               <th>Code</th>
               <th>Catégorie</th>
               <th>Justificatif</th>
@@ -428,7 +492,17 @@ function TxTable() {
                   {fmtAmount(t.montant)}
                 </td>
                 <td>
-                  <UsageToggle usage={usageOf(t, typeById)} onClick={() => toggleUsage(t)} />
+                  <select
+                    className="affectation-select"
+                    data-aff={t.affectation ?? ""}
+                    value={t.affectation ?? ""}
+                    onChange={(e) => setAffectation(t, (e.target.value || null) as Affectation | null)}
+                  >
+                    <option value="">—</option>
+                    {AFFECTATIONS.map((a) => (
+                      <option key={a} value={a}>{AFFECTATION_LABEL[a]}</option>
+                    ))}
+                  </select>
                 </td>
                 <td>
                   <input
@@ -481,21 +555,5 @@ function TxTable() {
         )}
       </div>
     </div>
-  );
-}
-
-/** Puce cliquable pro/perso : un clic bascule l'usage de la ligne. */
-function UsageToggle({ usage, onClick }: { usage: Usage; onClick: () => void }) {
-  const pro = usage === "pro";
-  return (
-    <button
-      onClick={onClick}
-      className="usage-pill"
-      data-usage={usage}
-      title="Cliquer pour basculer pro / perso"
-    >
-      {pro ? <Briefcase size={12} /> : <User size={12} />}
-      {pro ? "Pro" : "Perso"}
-    </button>
   );
 }

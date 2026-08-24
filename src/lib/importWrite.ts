@@ -12,6 +12,7 @@ import { db } from "./firebase";
 import { COL, createOwned, currentUid, deleteOwned, updateOwned } from "./db";
 import { importPath, uploadFile } from "./storage";
 import type {
+  Affectation,
   BankAccount,
   ImportKind,
   Transaction,
@@ -27,6 +28,7 @@ export interface TxDraft {
   montant: number;
   fp: string;
   categorie?: string | null;
+  affectation?: Affectation | null;
 }
 
 export interface WriteImportParams {
@@ -139,6 +141,7 @@ export async function writeImport(
         codeSuggere: null,
         codeValide: null,
         categorie: p.categorie ?? null,
+        affectation: p.affectation ?? null,
         usage: usage ?? null,
         justificatifStatus: "manquant",
         fluxInterne: false,

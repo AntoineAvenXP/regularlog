@@ -7,6 +7,7 @@ export interface AiStatementRow {
   libelle: string;
   montant: number | null;
   categorie?: string | null;
+  affectation?: "activite" | "prive" | "mixte" | null;
 }
 
 /** Compte détecté sur le relevé (sert à rattacher automatiquement). */

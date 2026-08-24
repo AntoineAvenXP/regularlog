@@ -649,6 +649,26 @@ table.grid select {
   box-shadow: 0 1px 3px rgba(12, 35, 40, 0.12);
 }
 
+/* select d'affectation (finalité IA d'une opération) */
+.affectation-select {
+  font-weight: 600;
+  font-size: 12px;
+  border-radius: 999px !important;
+  border: 1px solid var(--border);
+}
+.affectation-select[data-aff="activite"] {
+  background: #e6eef0;
+  color: #35707d;
+}
+.affectation-select[data-aff="prive"] {
+  background: var(--accent-soft);
+  color: var(--green-dark);
+}
+.affectation-select[data-aff="mixte"] {
+  background: #fdf2dd;
+  color: var(--amber);
+}
+
 /* puce pro/perso cliquable (table transactions) */
 .usage-pill {
   display: inline-flex;

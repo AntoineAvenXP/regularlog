@@ -1,38 +1,57 @@
-// Pro / Perso — logique pure de résolution et de filtrage.
-// L'usage d'une transaction est soit explicitement fixé (override par ligne),
-// soit déduit du type de l'entité de rattachement (société = pro, perso = perso).
+// Pro / Perso — logique pure. Le Pro/Perso est désormais le TYPE DU COMPTE
+// (BankAccount.usage), pas un tag par transaction. Repli : ancien tag de la
+// transaction, puis type de l'entité de rattachement.
 
-import type { EntityType, Transaction, Usage } from "./types";
+import type { Affectation, BankAccount, EntityType, Transaction, Usage } from "./types";
 
 export type UsageMode = "tout" | "pro" | "perso";
 
-/** Table id d'entité → type, pour résoudre l'usage sans recharger les entités. */
+/** Table id d'entité → type. */
 export function entityTypeMap(
   entities: { id: string; type: EntityType }[]
 ): Map<string, EntityType> {
   return new Map(entities.map((e) => [e.id, e.type]));
 }
 
-/** Usage effectif d'une transaction (override sinon déduit de l'entité). */
+/** Table id de compte → usage (Pro/Perso) du compte. */
+export function accountUsageMap(accounts: BankAccount[]): Map<string, Usage> {
+  const m = new Map<string, Usage>();
+  for (const a of accounts) if (a.usage === "pro" || a.usage === "perso") m.set(a.id, a.usage);
+  return m;
+}
+
+/** Usage (Pro/Perso) effectif d'une transaction = celui de SON COMPTE. */
 export function usageOf(
-  t: Pick<Transaction, "usage" | "entityId">,
+  t: Pick<Transaction, "bankAccountId" | "usage" | "entityId">,
+  accountUsageById: Map<string, Usage>,
   typeById: Map<string, EntityType>
 ): Usage {
-  if (t.usage === "pro" || t.usage === "perso") return t.usage;
+  const au = accountUsageById.get(t.bankAccountId);
+  if (au === "pro" || au === "perso") return au;
+  if (t.usage === "pro" || t.usage === "perso") return t.usage; // héritage
   return typeById.get(t.entityId) === "personnel" ? "perso" : "pro";
 }
 
 /** Vrai si la transaction entre dans le mode de vue global. */
 export function matchesUsage(
-  t: Pick<Transaction, "usage" | "entityId">,
+  t: Pick<Transaction, "bankAccountId" | "usage" | "entityId">,
   mode: UsageMode,
+  accountUsageById: Map<string, Usage>,
   typeById: Map<string, EntityType>
 ): boolean {
   if (mode === "tout") return true;
-  return usageOf(t, typeById) === mode;
+  return usageOf(t, accountUsageById, typeById) === mode;
 }
 
 export const USAGE_LABEL: Record<Usage, string> = {
   pro: "Pro",
   perso: "Perso",
 };
+
+export const AFFECTATION_LABEL: Record<Affectation, string> = {
+  activite: "Activité",
+  prive: "Privé",
+  mixte: "Mixte",
+};
+
+export const AFFECTATIONS: Affectation[] = ["activite", "prive", "mixte"];

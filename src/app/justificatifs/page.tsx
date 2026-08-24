@@ -23,6 +23,7 @@ import type {
   Justificatif,
   Transaction,
   TransactionOrigin,
+  Usage,
 } from "@/lib/types";
 import {
   deleteFile,
@@ -35,7 +36,7 @@ import {
   uploadFile,
 } from "@/lib/storage";
 import { fmtAmount } from "@/lib/parsing";
-import { entityTypeMap, usageOf } from "@/lib/usage";
+import { accountUsageMap, entityTypeMap, usageOf } from "@/lib/usage";
 import { getBrandAssets } from "@/lib/brandAssets";
 import { generateTransactionsPdf, type PdfRow } from "@/lib/pdfReport";
 import { useAuth } from "@/lib/auth";
@@ -125,6 +126,7 @@ function Justificatifs() {
   }, [user]);
 
   const typeById = useMemo(() => entityTypeMap(entities), [entities]);
+  const accUsageById = useMemo(() => accountUsageMap(accounts), [accounts]);
   const entName = (id: string) => entities.find((e) => e.id === id)?.denomination ?? "—";
   const accName = (id: string) => accounts.find((a) => a.id === id)?.libelle ?? "—";
 
@@ -280,6 +282,7 @@ function Justificatifs() {
             accounts={accounts}
             categories={categories}
             typeById={typeById}
+            accUsageById={accUsageById}
             accName={accName}
             entName={entName}
             targetDossierId={selDossier === "all" || selDossier === "none" ? null : selDossier}
@@ -386,6 +389,7 @@ function Generator({
   accounts,
   categories,
   typeById,
+  accUsageById,
   accName,
   entName,
   targetDossierId,
@@ -397,6 +401,7 @@ function Generator({
   accounts: BankAccount[];
   categories: Category[];
   typeById: Map<string, Entity["type"]>;
+  accUsageById: Map<string, Usage>;
   accName: (id: string) => string;
   entName: (id: string) => string;
   targetDossierId: string | null;
@@ -424,10 +429,10 @@ function Generator({
         const mo = (t.dateOperation || "").slice(0, 7);
         if (gStart && mo < gStart) return false;
         if (gEnd && mo > gEnd) return false;
-        if (gUsage !== "tout" && usageOf(t, typeById) !== gUsage) return false;
+        if (gUsage !== "tout" && usageOf(t, accUsageById, typeById) !== gUsage) return false;
         return true;
       }),
-    [tx, gEntity, gAccount, gCat, gStart, gEnd, gUsage, typeById]
+    [tx, gEntity, gAccount, gCat, gStart, gEnd, gUsage, accUsageById, typeById]
   );
 
   const groupKeyOf = (t: Transaction) =>

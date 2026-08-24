@@ -200,6 +200,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     const matched = autoMatch(det);
     if (matched) return matched;
     const entityId = await getOrCreateEntity(det);
+    const usage: Usage = det?.usage ?? "perso";
     const id = await createOwned(COL.accounts, {
       entityId,
       banque: det?.banque || "Banque",
@@ -207,6 +208,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
       ibanPartiel: iban4(det?.iban),
       source: "import" as const,
       bridgeAccountId: null,
+      usage,
     });
     const acc: BankAccount = {
       id,
@@ -217,6 +219,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
       ibanPartiel: iban4(det?.iban),
       source: "import",
       bridgeAccountId: null,
+      usage,
     };
     accountsRef.current = [...accountsRef.current, acc];
     setAccounts((prev) => [...prev, acc]);
@@ -260,6 +263,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
           montant: m,
           fp,
           categorie: r.categorie ?? null,
+          affectation: r.affectation ?? null,
         });
         const bId = bridgeWeak.get(weakKey(d, m));
         if (bId) supersede.add(bId);
@@ -276,7 +280,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
             file: null,
             fileHash: st.fileHash ?? null,
             supersedeTxIds: [...supersede],
-            usage: part.detected?.usage ?? null,
+            // Le Pro/Perso est porté par le COMPTE, pas par la transaction.
           })
         : { importId: "", count: 0 };
 
@@ -357,6 +361,7 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
             libelle: r.libelle,
             montant: r.montant,
             categorie: r.categorie ?? null,
+            affectation: r.affectation ?? null,
           }));
           const nbRows = cleanRows.filter((r) => r.date && r.montant != null && r.libelle).length;
           if (nbRows === 0) return;
@@ -526,9 +531,10 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     [enqueue]
   );
 
-  /** Bascule pro/perso d'un compte détecté → se propage à ses transactions. */
+  /** Bascule Pro/Perso d'un compte détecté = met à jour le TYPE DU COMPTE. */
   const setPartUsage = useCallback(
     async (st: Statement, partKey: string, usage: Usage) => {
+      const part = (st.parts ?? []).find((p) => p.key === partKey);
       const parts = (st.parts ?? []).map((p) =>
         p.key === partKey
           ? {
@@ -542,15 +548,11 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
       await updateOwned(COL.statements, st.id, { parts });
       patch(st.id, { parts });
 
-      const part = (st.parts ?? []).find((p) => p.key === partKey);
-      if (part?.importId) {
-        const all = await listOwned<Transaction>(COL.transactions);
-        const toUpd = all.filter((t) => t.importId === part.importId);
-        for (let i = 0; i < toUpd.length; i += 400) {
-          const b = writeBatch(db);
-          for (const t of toUpd.slice(i, i + 400)) b.update(doc(db, COL.transactions, t.id), { usage });
-          await b.commit();
-        }
+      const accId = part?.resolvedAccountId;
+      if (accId) {
+        await updateOwned(COL.accounts, accId, { usage });
+        accountsRef.current = accountsRef.current.map((a) => (a.id === accId ? { ...a, usage } : a));
+        setAccounts((prev) => prev.map((a) => (a.id === accId ? { ...a, usage } : a)));
       }
     },
     [patch]

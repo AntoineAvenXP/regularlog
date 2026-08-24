@@ -7,7 +7,7 @@ import { COL, listOwned } from "@/lib/db";
 import type { BankAccount, Entity, Justificatif, Transaction } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
 import { getFileBytes } from "@/lib/storage";
-import { entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
+import { accountUsageMap, entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
 import { useUsageFilter } from "@/lib/usageFilter";
 import { useAuth } from "@/lib/auth";
 
@@ -66,6 +66,7 @@ function ExportView() {
   const entName = (id: string) => entities.find((e) => e.id === id)?.denomination ?? "—";
   const accName = (id: string) => accounts.find((a) => a.id === id)?.libelle ?? "—";
   const typeById = useMemo(() => entityTypeMap(entities), [entities]);
+  const accUsageById = useMemo(() => accountUsageMap(accounts), [accounts]);
 
   const years = useMemo(() => {
     const s = new Set<string>();
@@ -79,7 +80,7 @@ function ExportView() {
   const filtered = useMemo(
     () =>
       tx.filter((t) => {
-        if (!matchesUsage(t, mode, typeById)) return false;
+        if (!matchesUsage(t, mode, accUsageById, typeById)) return false;
         if (fEntity && t.entityId !== fEntity) return false;
         if (fYear && !(t.dateOperation || "").startsWith(fYear)) return false;
         return true;
@@ -95,7 +96,7 @@ function ExportView() {
     };
     const lines = [cols.join(";")];
     for (const t of filtered) {
-      lines.push([t.dateOperation, t.dateValeur ?? "", entName(t.entityId), accName(t.bankAccountId), t.libelleBrut, String(t.montant).replace(".", ","), t.codeValide ?? "", t.codeSuggere ?? "", t.categorie ?? "", usageOf(t, typeById), t.justificatifStatus, t.fluxInterne ? "oui" : "non", t.origine, t.aVerifier ? "oui" : "non", t.notes ?? ""].map(esc).join(";"));
+      lines.push([t.dateOperation, t.dateValeur ?? "", entName(t.entityId), accName(t.bankAccountId), t.libelleBrut, String(t.montant).replace(".", ","), t.codeValide ?? "", t.codeSuggere ?? "", t.categorie ?? "", usageOf(t, accUsageById, typeById), t.justificatifStatus, t.fluxInterne ? "oui" : "non", t.origine, t.aVerifier ? "oui" : "non", t.notes ?? ""].map(esc).join(";"));
     }
     download(new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" }), `regularlog-transactions-${today()}.csv`);
   }

@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import Shell from "@/components/Shell";
 import { COL, listOwned } from "@/lib/db";
-import type { Entity, ReconciliationProposal, Transaction } from "@/lib/types";
+import type { BankAccount, Entity, ReconciliationProposal, Transaction } from "@/lib/types";
 import { fmtAmount } from "@/lib/parsing";
-import { entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
+import { accountUsageMap, entityTypeMap, matchesUsage, usageOf } from "@/lib/usage";
 import { useUsageFilter } from "@/lib/usageFilter";
 import { useAuth } from "@/lib/auth";
 
@@ -36,28 +36,32 @@ function Dashboard() {
   const { mode } = useUsageFilter();
   const [allTx, setAllTx] = useState<Transaction[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [recon, setRecon] = useState<ReconciliationProposal[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [t, e, r] = await Promise.all([
+      const [t, e, a, r] = await Promise.all([
         listOwned<Transaction>(COL.transactions),
         listOwned<Entity>(COL.entities),
+        listOwned<BankAccount>(COL.accounts),
         listOwned<ReconciliationProposal>(COL.reconciliations),
       ]);
       setAllTx(t);
       setEntities(e);
+      setAccounts(a);
       setRecon(r);
       setLoading(false);
     })();
   }, [user]);
 
   const typeById = useMemo(() => entityTypeMap(entities), [entities]);
+  const accUsageById = useMemo(() => accountUsageMap(accounts), [accounts]);
   const tx = useMemo(
-    () => allTx.filter((t) => matchesUsage(t, mode, typeById)),
-    [allTx, mode, typeById]
+    () => allTx.filter((t) => matchesUsage(t, mode, accUsageById, typeById)),
+    [allTx, mode, accUsageById, typeById]
   );
 
   if (loading) return <p className="muted">Chargement…</p>;
@@ -98,7 +102,7 @@ function Dashboard() {
   // Ventilation pro / perso (seulement pertinente en vue « Tout »)
   let proCount = 0;
   let persoCount = 0;
-  for (const t of tx) (usageOf(t, typeById) === "pro" ? (proCount++) : (persoCount++));
+  for (const t of tx) (usageOf(t, accUsageById, typeById) === "pro" ? (proCount++) : (persoCount++));
 
   const withMonth = new Set(tx.map((t) => (t.dateOperation || "").slice(0, 7)));
   const months = monthsSince("2024-01");
