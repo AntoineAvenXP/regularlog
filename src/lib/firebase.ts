@@ -36,10 +36,11 @@ try {
 export const db = _db;
 
 export const storage = getStorage(app);
-// Relevés scannés parfois lourds : on laisse plus de temps aux upload/download
-// avant d'abandonner (défaut = 2 min → erreur storage/retry-limit-exceeded).
-storage.maxUploadRetryTime = 600000; // 10 min
-storage.maxOperationRetryTime = 300000; // 5 min
+// Storage est OPTIONNEL dans Regularlog (le cœur = Firestore). On fait échouer
+// VITE les opérations Storage (au lieu de bloquer plusieurs minutes) : la
+// persistance du fichier est best-effort et ne doit jamais figer le traitement.
+storage.maxUploadRetryTime = 20000; // 20 s
+storage.maxOperationRetryTime = 15000; // 15 s
 
 export const functions = getFunctions(app, "europe-west1");
 export default app;

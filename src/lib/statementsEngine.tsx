@@ -325,23 +325,33 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
       try {
         let file = filesRef.current.get(st.id);
         if (!file) {
+          // Reprise sans fichier en mémoire : on tente Storage (échec RAPIDE si
+          // indisponible) avec un message clair plutôt qu'une erreur brute.
           if (!st.storagePath) throw new Error("Fichier non disponible. Re-dépose le relevé.");
-          const bytes = await getFileBytes(st.storagePath);
-          file = new File([bytes], st.fileName, { type: mimeOf(st.fileName) });
+          try {
+            const bytes = await getFileBytes(st.storagePath);
+            file = new File([bytes], st.fileName, { type: mimeOf(st.fileName) });
+          } catch {
+            throw new Error("Fichier non disponible (stockage). Re-dépose le relevé.");
+          }
         }
         const pages = await toPageImages(file);
 
+        // Persistance du fichier léger : EN ARRIÈRE-PLAN, jamais bloquante. Si
+        // Storage est indisponible, l'IA + l'import continuent quand même.
         if (!st.storagePath && pages.length) {
-          try {
-            const blob = await buildStatementPdf(pages);
-            const pdfName = st.fileName.replace(/\.[^.]+$/, "") + ".pdf";
-            const path = statementPath(st.id, pdfName);
-            await uploadBlob(path, blob, "application/pdf");
-            await updateOwned(COL.statements, st.id, { storagePath: path });
-            patch(st.id, { storagePath: path });
-          } catch {
-            /* persistance non bloquante */
-          }
+          void (async () => {
+            try {
+              const blob = await buildStatementPdf(pages);
+              const pdfName = st.fileName.replace(/\.[^.]+$/, "") + ".pdf";
+              const path = statementPath(st.id, pdfName);
+              await uploadBlob(path, blob, "application/pdf");
+              await updateOwned(COL.statements, st.id, { storagePath: path });
+              patch(st.id, { storagePath: path });
+            } catch {
+              /* stockage indisponible : copie non conservée, sans impact */
+            }
+          })();
         }
 
         const { groups } = await extractFromImages(pages, categoriesRef.current, (done, total) =>
