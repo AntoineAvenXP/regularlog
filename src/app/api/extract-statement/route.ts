@@ -9,10 +9,12 @@ export const runtime = "nodejs";
 // parallèles. 60 s est large et compatible tous plans Vercel.
 export const maxDuration = 60;
 
-// Opus par défaut pour Regularlog : lecture des scans + analyse fine des libellés
-// (répartition activité/privé) bien meilleure que Haiku. Surchargéable via l'env
-// ANTHROPIC_MODEL (ex. claude-sonnet-5 pour un compromis coût/vitesse).
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-5";
+// Sonnet 5 par défaut : bien meilleur que Haiku pour lire les scans + trier
+// activité/privé, et surtout ASSEZ RAPIDE pour tenir dans la limite de durée
+// d'une fonction Vercel (Opus dépasse et provoque des 504). Surchargeable via
+// ANTHROPIC_MODEL (claude-opus-5 possible si le traitement passe côté serveur
+// long, sinon garder Sonnet).
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
 interface ExtractedRow {
   date: string | null;
@@ -251,12 +253,15 @@ export async function POST(req: NextRequest) {
         max_tokens: 16000,
         messages: [{ role: "user", content }],
       }),
+      // Garde-fou : on coupe avant la limite Vercel pour renvoyer une erreur
+      // propre (récupérable par « Réessayer ») au lieu d'un 504 brut.
+      signal: AbortSignal.timeout(55000),
     });
   } catch (e) {
-    return NextResponse.json(
-      { error: "Appel Anthropic impossible : " + (e as Error).message },
-      { status: 502 }
-    );
+    const msg = (e as Error).name === "TimeoutError"
+      ? "L'IA a mis trop de temps sur cette page — réessaie."
+      : "Appel Anthropic impossible : " + (e as Error).message;
+    return NextResponse.json({ error: msg }, { status: 504 });
   }
 
   if (!resp.ok) {
