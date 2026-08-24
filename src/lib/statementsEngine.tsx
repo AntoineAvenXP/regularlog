@@ -598,6 +598,8 @@ export function StatementsProvider({ children }: { children: ReactNode }) {
     if (st.storagePath) await deleteFile(st.storagePath);
     await deleteOwned(COL.statements, st.id);
     filesRef.current.delete(st.id);
+    // Libère l'empreinte : le même fichier peut être ré-importé après suppression.
+    if (st.fileHash) importHashesRef.current.delete(st.fileHash);
     setStatements((prev) => prev.filter((s) => s.id !== st.id));
   }, []);
 
