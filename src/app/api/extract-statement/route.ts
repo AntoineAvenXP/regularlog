@@ -65,6 +65,62 @@ const PROMPT_HEAD =
   "- montant = montant signé en euros : NEGATIF pour un débit / retrait / paiement / prélèvement, " +
   "POSITIF pour un crédit / virement reçu / versement. Point décimal, pas de symbole ni de séparateur de milliers.\n";
 
+/** Nettoie un fragment JSON (fences markdown, virgules traînantes). */
+function cleanJson(s: string): string {
+  return s.replace(/```(?:json)?/gi, "").replace(/,\s*([}\]])/g, "$1");
+}
+
+/** Extrait un objet {...} équilibré à partir de l'accolade ouvrante `start`. */
+function balanced(text: string, start: number): string | null {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/**
+ * Récupération tolérante quand le JSON est tronqué (réponse coupée) : on
+ * extrait le bloc "compte" équilibré + chaque objet d'opération COMPLET.
+ */
+function salvage(text: string): { compte: unknown; operations: unknown[] } {
+  let compte: unknown = null;
+  const ci = text.search(/"compte"\s*:\s*\{/);
+  if (ci >= 0) {
+    const braceIdx = text.indexOf("{", ci + 8);
+    const block = braceIdx >= 0 ? balanced(text, braceIdx) : null;
+    if (block) {
+      try {
+        compte = JSON.parse(cleanJson(block));
+      } catch {
+        /* bloc compte illisible */
+      }
+    }
+  }
+  const operations: unknown[] = [];
+  const re = /\{[^{}]*"montant"[^{}]*\}/g;
+  for (const m of text.matchAll(re)) {
+    try {
+      operations.push(JSON.parse(cleanJson(m[0])));
+    } catch {
+      /* opération partielle : ignorée */
+    }
+  }
+  return { compte, operations };
+}
+
 const PROMPT_TAIL =
   "- affectation = FINALITÉ de l'opération (indépendante du type de compte) : " +
   '"activite" si la dépense/recette relève de l\'activité professionnelle (achats métier, ' +
@@ -178,7 +234,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 8192,
+        max_tokens: 16000,
         messages: [{ role: "user", content }],
       }),
     });
@@ -205,24 +261,34 @@ export async function POST(req: NextRequest) {
     .map((c) => (c.type === "text" ? c.text || "" : ""))
     .join("");
 
-  // Format actuel = objet {compte, operations}. On tolère aussi l'ancien format
-  // (tableau nu d'opérations) au cas où le modèle régresse.
+  // Parse robuste : objet {compte, operations}, sinon tableau nu, sinon
+  // récupération tolérante des opérations complètes si la réponse est tronquée.
+  let parsed: unknown = null;
   const objSlice = text.match(/\{[\s\S]*\}/)?.[0];
-  const arrSlice = text.match(/\[[\s\S]*\]/)?.[0];
-  const jsonSlice = objSlice || arrSlice;
-  if (!jsonSlice) {
+  if (objSlice) {
+    try {
+      parsed = JSON.parse(cleanJson(objSlice));
+    } catch {
+      /* on tentera le repli */
+    }
+  }
+  if (parsed == null) {
+    const arrSlice = text.match(/\[[\s\S]*\]/)?.[0];
+    if (arrSlice) {
+      try {
+        parsed = JSON.parse(cleanJson(arrSlice));
+      } catch {
+        /* on tentera le salvage */
+      }
+    }
+  }
+  if (parsed == null) {
+    const s = salvage(text);
+    if (s.operations.length > 0 || s.compte) parsed = { compte: s.compte, operations: s.operations };
+  }
+  if (parsed == null) {
     return NextResponse.json(
       { error: "Réponse IA illisible.", raw: text.slice(0, 300) },
-      { status: 502 }
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonSlice);
-  } catch {
-    return NextResponse.json(
-      { error: "JSON IA invalide.", raw: jsonSlice.slice(0, 300) },
       { status: 502 }
     );
   }
