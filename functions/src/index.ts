@@ -14,7 +14,12 @@ import { initializeApp } from "firebase-admin/app";
 
 initializeApp();
 
-// T6 — Bridge (agrégation bancaire)
-export { bridgeConnect, bridgeListAccounts, bridgeSync, bridgeDailySync } from "./bridge/sync";
-// T7 — Boîte mail + rapprochement IA
-export { mailboxPoll } from "./mailbox/poll";
+// Lecture IA des relevés (Opus, sans limite de durée Vercel)
+export { extractStatement } from "./extract/statement";
+
+// T6 (Bridge) et T7 (boîte mail) restent CODÉES mais NON exportées : leurs
+// secrets (BRIDGE_*, GMAIL_*) ne sont pas encore posés, et Firebase exige tous
+// les secrets du codebase à chaque déploiement. Réactiver ces exports une fois
+// les secrets configurés.
+// export { bridgeConnect, bridgeListAccounts, bridgeSync, bridgeDailySync } from "./bridge/sync";
+// export { mailboxPoll } from "./mailbox/poll";

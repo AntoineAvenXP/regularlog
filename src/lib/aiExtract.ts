@@ -25,6 +25,9 @@ export interface AiExtractResult {
   truncated: boolean;
 }
 
+import { httpsCallable } from "firebase/functions";
+import { functions } from "./firebase";
+
 function normalizeResult(data: unknown): AiExtractResult {
   const d = (data ?? {}) as AiExtractResult;
   return {
@@ -35,26 +38,26 @@ function normalizeResult(data: unknown): AiExtractResult {
 }
 
 /**
- * Lit UNE image de page de relevé (base64 sans préfixe). Appel court et léger :
- * le découpage du PDF en pages + le parallélisme sont gérés par
- * lib/statementExtract. Corps de requête minuscule → pas de limite 413.
+ * Lit UNE image de page de relevé (base64 sans préfixe) via la Cloud Function
+ * `extractStatement` (Opus, europe-west1) : pas de limite de durée courte comme
+ * sur Vercel. Le découpage en pages + le parallélisme sont gérés par
+ * lib/statementExtract. Timeout client porté à 300 s (Opus peut être lent).
  */
 export async function extractStatementImage(
   base64: string,
   mediaType: string,
   categories: string[] = []
 ): Promise<AiExtractResult> {
-  const res = await fetch("/api/extract-statement", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image: base64, mediaType, categories }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = (data as { error?: string }).error || `Erreur ${res.status}`;
-    throw new Error(msg);
+  const fn = httpsCallable<
+    { image: string; mediaType: string; categories: string[] },
+    AiExtractResult
+  >(functions, "extractStatement", { timeout: 300000 });
+  try {
+    const { data } = await fn({ image: base64, mediaType, categories });
+    return normalizeResult(data);
+  } catch (e) {
+    throw new Error((e as { message?: string }).message || "Erreur IA");
   }
-  return normalizeResult(data);
 }
 
 /** Repli : lecture d'un fichier via son URL Storage (téléchargé côté serveur). */
