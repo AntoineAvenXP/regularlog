@@ -15,6 +15,8 @@ export const maxDuration = 60;
 // ANTHROPIC_MODEL (claude-opus-5 possible si le traitement passe côté serveur
 // long, sinon garder Sonnet).
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+// Repli rapide si le modèle principal est trop lent sur une page (anti-504).
+const FALLBACK_MODEL = "claude-haiku-4-5-20251001";
 
 interface ExtractedRow {
   date: string | null;
@@ -239,9 +241,8 @@ export async function POST(req: NextRequest) {
   }
   content.push({ type: "text", text: buildPrompt(categories) });
 
-  let resp: Response;
-  try {
-    resp = await fetch("https://api.anthropic.com/v1/messages", {
+  const askAnthropic = (model: string, timeoutMs: number): Promise<Response> =>
+    fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "x-api-key": apiKey,
@@ -249,19 +250,45 @@ export async function POST(req: NextRequest) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: MODEL,
+        model,
         max_tokens: 16000,
         messages: [{ role: "user", content }],
       }),
-      // Garde-fou : on coupe avant la limite Vercel pour renvoyer une erreur
-      // propre (récupérable par « Réessayer ») au lieu d'un 504 brut.
-      signal: AbortSignal.timeout(55000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
+
+  // Modèle principal (Sonnet) avec un budget de 40 s ; s'il est trop lent sur une
+  // page dense, REPLI automatique sur Haiku (rapide) → on reste sous la limite
+  // Vercel (~55 s max) et on renvoie toujours un résultat, sans Cloud Function.
+  let resp: Response;
+  try {
+    resp = await askAnthropic(MODEL, 40000);
   } catch (e) {
-    const msg = (e as Error).name === "TimeoutError"
-      ? "L'IA a mis trop de temps sur cette page — réessaie."
-      : "Appel Anthropic impossible : " + (e as Error).message;
-    return NextResponse.json({ error: msg }, { status: 504 });
+    if ((e as Error).name === "TimeoutError" && MODEL !== FALLBACK_MODEL) {
+      try {
+        resp = await askAnthropic(FALLBACK_MODEL, 15000);
+      } catch (e2) {
+        const timeout = (e2 as Error).name === "TimeoutError";
+        return NextResponse.json(
+          {
+            error: timeout
+              ? "L'IA a mis trop de temps sur cette page — réessaie."
+              : "Appel Anthropic impossible : " + (e2 as Error).message,
+          },
+          { status: 504 }
+        );
+      }
+    } else {
+      const timeout = (e as Error).name === "TimeoutError";
+      return NextResponse.json(
+        {
+          error: timeout
+            ? "L'IA a mis trop de temps sur cette page — réessaie."
+            : "Appel Anthropic impossible : " + (e as Error).message,
+        },
+        { status: 504 }
+      );
+    }
   }
 
   if (!resp.ok) {
